@@ -60,9 +60,6 @@ RE_XREF = re.compile(
 )
 
 AGREEMENT_FLOOR = 0.95
-TOP_ZONE = 0.085
-BOTTOM_ZONE = 0.90
-LOWER_ZONE = 0.75
 
 
 # --------------------------------------------------------------------------
@@ -196,6 +193,25 @@ def _overlap_ratio(a: fitz.Rect, b: fitz.Rect) -> float:
     return inter / smaller
 
 
+def _is_rule_artifact(bbox: fitz.Rect) -> bool:
+    """True for a sliver a layout model mistook for a picture or table.
+
+    A running header/footer divider or a table's own border is drawn as a
+    vector line, and both Marker and Docling occasionally box just that line
+    as a "picture" or "table" region. A real figure, however small, is
+    roughly as tall as it is wide; a rule is not. Every misdetection found
+    across a 23-chapter fixture ran 280-450pt in one dimension while under
+    15pt in the other -- a 25:1+ aspect ratio no genuine diagram approaches,
+    including the smallest legitimate figures. Left unfiltered, one of these
+    became a real figure's own label: the caption binder chose the header
+    rule over the actual chart below it because both sat above the caption
+    and the rule came first in that page's block order.
+    """
+    width, height = bbox.width, bbox.height
+    short, long = min(width, height), max(width, height)
+    return short < 15.0 and long > 25 * short
+
+
 def _merge_figure_regions(regions: list[Region]) -> list[Region]:
     """Union overlapping figure regions proposed by either extractor."""
     figures = [
@@ -216,7 +232,7 @@ def _merge_figure_regions(regions: list[Region]) -> list[Region]:
             merged.append(
                 Region(region.page, fitz.Rect(region.bbox), "figure", region.source)
             )
-    return merged
+    return [r for r in merged if not _is_rule_artifact(r.bbox)]
 
 
 def reconcile_chapter(chapter: int, pdf: Path) -> ChapterDoc:

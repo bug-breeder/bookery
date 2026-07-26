@@ -10,7 +10,28 @@ from __future__ import annotations
 import re
 
 _RE_FRONTMATTER = re.compile(r"\A---\n.*?\n---\n", re.DOTALL)
-_RE_MDX_IMPORT = re.compile(r"^\s*(import|export)\s.+$", re.MULTILINE)
+# The document's only level-1 heading is `display_title(meta)` verbatim --
+# the same "N. Title" string already emitted as frontmatter `title`/
+# `sidebar_label`. It exists for on-page display, not as body prose, so
+# counting it here would double-count the title's words and (for chapter
+# titles whose title text itself carries a digit, e.g. "Blockchain 101")
+# introduce numerals the source page's own body text never repeats. Deeper
+# headings (`##` and beyond) are real section titles copied from the PDF and
+# are left in place; the negative lookahead on the hash run keeps this from
+# also eating them.
+_RE_H1 = re.compile(r"^[ \t]{0,3}#(?!#)[ \t]+.*\n?", re.MULTILINE)
+# Matches only genuine JS/MDX import-export syntax (a quoted module
+# specifier, or `export default`/`export const`/...), not prose that merely
+# starts a sentence with the English word "import" or "export". Chapter 11's
+# "import in Solidity allows the importing of symbols ..." is exactly such a
+# sentence -- the bare `^(import|export)\s` version of this regex swallowed
+# the whole paragraph because it never checked for real syntax after the
+# keyword, which registered as a silent content loss against the reference.
+_RE_MDX_IMPORT = re.compile(
+    r"^[ \t]*import\s[^\n]*?\sfrom\s['\"][^'\"\n]+['\"];?[ \t]*$"
+    r"|^[ \t]*export\s+(?:default\b|const\b|function\b|class\b|\{)[^\n]*$",
+    re.MULTILINE,
+)
 _RE_CODE_FENCE = re.compile(r"```.*?```", re.DOTALL)
 _RE_HTML_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
 # Images contribute no text: their alt text is derived from the caption, which
@@ -44,7 +65,16 @@ _RE_HEADING = re.compile(r"^\s{0,3}#{1,6}\s+", re.MULTILINE)
 # markup, not content. Left in place their digits register as numeric literals
 # the source does not contain.
 _RE_HEADING_ANCHOR = re.compile(r"[ \t]*\{#[A-Za-z0-9_.:-]+\}[ \t]*$", re.MULTILINE)
-_RE_EMPHASIS = re.compile(r"(\*\*|\*|__|_|`)")
+# The emitter's only inline emphasis is `**bold**` (figure/table caption
+# labels, footnote markers); it never produces italics or inline code. A
+# blanket "strip any * or _" rule -- the obvious first draft -- corrupts
+# source prose that contains literal underscores or asterisks it didn't
+# write: shell flags and identifiers from a code-heavy chapter
+# ("rsa_keygen_bits", "-param_enc") silently fuse into one word once the
+# underscore between them disappears, so "rsa" and "keygen" vanish from the
+# token stream as if the pipeline had dropped them. Matching only genuine
+# `**...**` pairs and keeping the wrapped text avoids that.
+_RE_BOLD = re.compile(r"\*\*(.+?)\*\*", re.DOTALL)
 _RE_TABLE_PIPE = re.compile(r"^\s*\|?[\s:|-]+\|[\s:|-]*$", re.MULTILINE)
 _RE_BLOCKQUOTE = re.compile(r"^\s{0,3}>\s?", re.MULTILINE)
 _RE_LIST_BULLET = re.compile(r"^\s*[-*+]\s+", re.MULTILINE)
@@ -53,6 +83,7 @@ _RE_LIST_BULLET = re.compile(r"^\s*[-*+]\s+", re.MULTILINE)
 def markdown_to_text(md: str) -> str:
     """Plain text of an emitted chapter, with math excluded like an image."""
     text = _RE_FRONTMATTER.sub("", md)
+    text = _RE_H1.sub("", text)
     text = _RE_HTML_COMMENT.sub(" ", text)
     text = _RE_MDX_IMPORT.sub(" ", text)
     text = _RE_CODE_FENCE.sub(" ", text)
@@ -69,5 +100,5 @@ def markdown_to_text(md: str) -> str:
     text = _RE_HEADING.sub("", text)
     text = _RE_BLOCKQUOTE.sub("", text)
     text = _RE_LIST_BULLET.sub("", text)
-    text = _RE_EMPHASIS.sub("", text)
+    text = _RE_BOLD.sub(r"\1", text)
     return text

@@ -16,6 +16,7 @@ processed chapter from being reported as shipped.
 
 from __future__ import annotations
 
+import base64
 import collections
 import hashlib
 import json
@@ -169,6 +170,17 @@ def gate_assets(assets: list[dict], referenced_labels: set[str], root: Path) -> 
 
     for asset in assets:
         label = asset.get("label", "?")
+
+        # stage3 already know this one is unusable (too small to crop
+        # cleanly, say) and recorded why; it never produced a file on
+        # purpose. Re-flagging it as "file_missing" would bury the real
+        # reason behind a misleading one and imply a file the pipeline was
+        # never going to write in the first place.
+        pre_existing_issue = asset.get("issue")
+        if pre_existing_issue:
+            problems.append({"label": label, "issue": pre_existing_issue})
+            continue
+
         rel = asset.get("file")
         path = root / rel if rel else None
 
@@ -261,7 +273,7 @@ def gate_math(equations: list[dict], katex_script: Path) -> Gate:
 
 
 def gate_assets_render(
-    assets: list[dict], emitted_markdown: str, built_html: str | None
+    assets: list[dict], emitted_markdown: str, built_html: str | None, static_root: Path | None = None
 ) -> dict:
     """Every figure must actually appear as an image, not just exist on disk.
 
@@ -269,6 +281,12 @@ def gate_assets_render(
     Markdown image syntax early and makes the figure render as literal prose.
     Checking only that the PNG exists misses this entirely, so the emitted
     Markdown and, when a build is present, the built HTML are both checked.
+
+    Small images (under webpack's inline threshold, ~8KB) are not linked by
+    filename in the built HTML at all: the bundler embeds them directly as
+    base64 ``data:`` URIs. A chapter with many small decorative figures would
+    otherwise fail this gate on every one of them, so when the filename isn't
+    found we fall back to checking whether the asset's own bytes were inlined.
     """
     expected = [a for a in assets if a.get("file") and not a.get("issue")]
     missing_in_markdown = [
@@ -279,8 +297,11 @@ def gate_assets_render(
     if built_html is not None:
         for asset in expected:
             stem = Path(asset["file"]).stem
-            if not re.search(rf"<img[^>]*{re.escape(stem)}[-.]", built_html):
-                missing_in_html.append(asset["label"])
+            if re.search(rf"<img[^>]*{re.escape(stem)}[-.]", built_html):
+                continue
+            if _asset_inlined_in_html(asset, static_root, built_html):
+                continue
+            missing_in_html.append(asset["label"])
 
     return {
         "figures": len(expected),
@@ -289,6 +310,29 @@ def gate_assets_render(
         "html_checked": built_html is not None,
         "ok": not missing_in_markdown and not missing_in_html,
     }
+
+
+def _asset_inlined_in_html(asset: dict, static_root: Path | None, built_html: str) -> bool:
+    """True when the asset's raw bytes were base64-inlined into the page.
+
+    Only a prefix is matched: the full data URI can be tens of kilobytes and
+    a short, unique-enough prefix is far cheaper to search for.
+    """
+    if static_root is None:
+        return False
+    for key in ("file", "webp"):
+        rel = asset.get(key)
+        if not rel:
+            continue
+        path = static_root / rel
+        try:
+            data = path.read_bytes()
+        except OSError:
+            continue
+        prefix = base64.b64encode(data).decode()[:64]
+        if prefix in built_html:
+            return True
+    return False
 
 
 def check_payoff_cells(pdf_cells: list[str], emitted_markdown: str) -> dict:

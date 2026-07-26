@@ -153,6 +153,23 @@ own PDF. Nothing under `work/`, `reports/`, `site/docs/`, or
 `site/static/img/` is committed to this repository (see `.gitignore`),
 so it stays free of any specific book's content.
 
+### Running against a book that lives in its own repo
+
+By default every path in `pipeline/config.py` (`pdf/`, `work/`, `site/`,
+`reports/`) is resolved relative to wherever this checkout of the tool
+lives, since that's what a self-contained clone-per-book setup needs. Set
+`BOOKERY_ROOT` to point the tool at a book's data living somewhere else
+entirely — a separate "book store" repo with no copy of the pipeline code
+in it — instead:
+
+```bash
+BOOKERY_ROOT=/path/to/book-store/some-book uv run bookery verify --all
+```
+
+`some-book/` just needs the same `pdf/`, `work/`, `site/`, `reports/`
+layout this repo has; nothing under it needs to know `bookery` itself
+exists anywhere in particular.
+
 ## Tests
 
 ```bash

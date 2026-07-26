@@ -7,11 +7,29 @@ where another stage put its artifacts.
 from __future__ import annotations
 
 import functools
+import os
 import subprocess
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+
+def _resolve_root() -> Path:
+    """Where this book's pdf/, work/, site/, and reports/ live.
+
+    Defaults to the directory containing this checkout of the tool, which is
+    what every self-contained book project (tool and data copied together)
+    has relied on so far. Setting `BOOKERY_ROOT` decouples the two: a single
+    `bookery` checkout can then run against a book's data living in its own
+    repo (a "bookery-store"), invoked from wherever `bookery` itself is
+    installed rather than from inside the book's own directory.
+    """
+    override = os.environ.get("BOOKERY_ROOT")
+    if override:
+        return Path(override).expanduser().resolve()
+    return Path(__file__).resolve().parent.parent
+
+
+ROOT = _resolve_root()
 
 PDF_DIR = ROOT / "pdf"
 WORK = ROOT / "work"

@@ -21,12 +21,9 @@ import fitz
 
 from pipeline import config, furniture, pdfutil, textnorm
 
-# Zones expressed as fractions of page height so the logic ports to other
-# page sizes. Tuned against this book: body text reaches y1~0.90H, the
-# running head sits at y0~0.054H, and the folio at y0~0.926H.
-TOP_ZONE = 0.085
-BOTTOM_ZONE = 0.90
-LOWER_ZONE = 0.75
+# Furniture zone geometry (header/folio bands, footer boilerplate search)
+# lives entirely in `pipeline.furniture`, measured per-book rather than
+# assumed from a fixed fraction of page height.
 
 # A line must recur on at least this many pages to count as furniture.
 MIN_REPEATS = 3
@@ -120,6 +117,16 @@ def _classify(
     )
     if reason:
         return reason
+
+    # Below `display_heading_threshold` but still oversized enough that
+    # `stage2_reconcile` reads it as the chapter's own level-1 heading, which
+    # `stage4_emit` then never prints in the body -- the frontmatter title
+    # already carries it. Left in the reference, its words and any digits in
+    # it (a chapter number, or a title like "Blockchain 101") would be
+    # credited against a candidate that represents them exactly once, via
+    # that frontmatter line, not twice.
+    if furniture.is_chapter_opener_size(line.size, body_size):
+        return "chapter_opener_heading"
 
     # A caption is content even when it sits geometrically inside the figure's
     # drawing extent, which happens whenever a diagram's vectors overrun the

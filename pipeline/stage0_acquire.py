@@ -18,15 +18,19 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 import fitz
+from rapidfuzz import fuzz
 
-from . import config, pdfutil
+from . import config, pdfutil, textnorm
 
 ROMAN = {"I": 1, "II": 2, "III": 3, "IV": 4, "V": 5, "VI": 6, "VII": 7}
 
 # Table-of-contents line shapes. Section entries are distinguished by their
-# dotted leaders; chapter and part entries have none.
+# dotted leaders; chapter and part entries have none. The chapter line's
+# optional "Chapter " prefix and optional ":" accommodate both "3   Strong
+# and Weak Ties   45" and "Chapter 3: Strong and Weak Ties   45" -- book
+# design varies on this, the page-number column does not.
 RE_PART = re.compile(r"^\s*(I|II|III|IV|V|VI|VII)\s\s+(\S.*?)\s{2,}(\d+)\s*$")
-RE_CHAPTER = re.compile(r"^\s*(\d{1,2})\s+([A-Z]\S*.*?)\s{2,}(\d+)\s*$")
+RE_CHAPTER = re.compile(r"^\s*(?:Chapter\s+)?(\d{1,2})\s*:?\s+([A-Z]\S*.*?)\s{2,}(\d+)\s*$")
 # The leader is usually many dots, but a title long enough to reach the page
 # number column on its own (9.7's, at 75 characters) prints only " . "
 # before it -- 3 characters, just under the 4+ this used to require, which
@@ -36,7 +40,31 @@ RE_CHAPTER = re.compile(r"^\s*(\d{1,2})\s+([A-Z]\S*.*?)\s{2,}(\d+)\s*$")
 RE_SECTION = re.compile(r"^\s*(\d{1,2}\.\d{1,2})\s*(\S.*?)[.\s]{3,}(\d+)\s*$")
 RE_PREFACE = re.compile(r"^\s*(Preface)\s{2,}([ivxl]+)\s*$")
 
-RE_CHAPTER_HEAD = re.compile(r"^Chapter\s*(\d{1,2})$")
+# Headings that, if present, mark the end of chapter body content -- an
+# index or appendix is not "Bibliography", but it still isn't chapter prose
+# and the last chapter must not be allowed to swallow it. Order doesn't
+# matter here; whichever is found earliest in the document wins.
+BACK_MATTER_HEADINGS = ("Bibliography", "References", "Index", "Appendix")
+
+# A fuzzy match ratio below this is treated as "not this chapter's opener",
+# tolerating the punctuation/whitespace differences between how a title is
+# typeset on the TOC page versus the chapter's own opening page. This has to
+# be a strict *full-string* ratio, not a partial one: a short title like
+# "Games" or "Contents" is a near-substring match for all sorts of unrelated
+# headings once partial alignment is allowed, and a part-divider page's own
+# title (e.g. "Game Theory") shares enough vocabulary with a chapter inside
+# that part (e.g. "Evolutionary Game Theory") to false-positive too.
+TITLE_MATCH_RATIO = 90.0
+
+# A chapter-opener heading is usually the title alone, but is sometimes led
+# by a number/roman-numeral ornament ("1", "Chapter 6", "III.") that isn't
+# part of the title text used in the ToC. Stripped once from the front
+# before matching, so "Chapter 6 Games" can still hit "Games" at a strict
+# ratio without that prefix also being allowed to loosely match anything.
+_LEADING_ORDINAL_RE = re.compile(
+    r"^\s*(?:chapter\s+)?(?:\d{1,3}|[ivxlcdm]{1,6})\s*[:.\-\u2013\u2014]?\s+",
+    re.IGNORECASE,
+)
 
 
 @dataclass
@@ -140,19 +168,44 @@ def probe_images(pdf: Path) -> dict[int, int]:
     return counts
 
 
-def find_toc_pages(doc: fitz.Document, max_scan: int = 20) -> list[int]:
-    """1-indexed PDF pages that make up the table of contents."""
+TOC_HEADING_RE = re.compile(r"^(?:table\s+of\s+)?contents$", re.IGNORECASE)
+
+
+def find_toc_pages(doc: fitz.Document, max_scan: int = 50) -> list[int]:
+    """1-indexed PDF pages that make up the table of contents.
+
+    Some books print "Contents" as a running header on every ToC page;
+    others print it once and every following ToC page's first line is just
+    its own folio number, with "CONTENTS" appearing lower on the page
+    instead. `max_scan` is generous (50) because a heavily-nested,
+    multi-level ToC can run to 20+ pages on its own.
+    """
     pages = []
     for i in range(min(max_scan, doc.page_count)):
         text = doc[i].get_text()
         head = text.strip().splitlines()[:1]
-        if head and head[0].strip() == "Contents":
+        if head and TOC_HEADING_RE.match(head[0].strip()):
             pages.append(i + 1)
-        elif pages and re.search(r"\bCONTENTS\b", text[:200]):
+        elif pages and re.search(r"\bCONTENTS\b", text[:200], re.IGNORECASE):
             pages.append(i + 1)
         elif pages:
             break
     return pages
+
+
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+
+def _clean_toc_text(text: str) -> str:
+    """Strip stray control characters before stripping whitespace.
+
+    A dot-leader glyph with an incomplete ToUnicode mapping can decode to a
+    control character (observed: a trailing "\\x08") instead of vanishing
+    or becoming a normal dot/space -- plain `.strip()` leaves it in place
+    since it isn't whitespace, and it then survives into every downstream
+    title comparison.
+    """
+    return _CONTROL_CHARS_RE.sub("", text).strip()
 
 
 def parse_toc(pdf: Path, toc_pages: list[int]) -> tuple[list[PartEntry], list[ChapterEntry], dict]:
@@ -175,13 +228,13 @@ def parse_toc(pdf: Path, toc_pages: list[int]) -> tuple[list[PartEntry], list[Ch
 
         m = RE_PART.match(line)
         if m:
-            roman, title, page = m.group(1), m.group(2).strip(), int(m.group(3))
+            roman, title, page = m.group(1), _clean_toc_text(m.group(2)), int(m.group(3))
             parts.append(PartEntry(ROMAN[roman], roman, title, page))
             continue
 
         m = RE_SECTION.match(line)
         if m:
-            number, title, page = m.group(1), m.group(2).strip(), int(m.group(3))
+            number, title, page = m.group(1), _clean_toc_text(m.group(2)), int(m.group(3))
             chap_no = int(number.split(".")[0])
             for ch in chapters:
                 if ch.number == chap_no:
@@ -191,7 +244,7 @@ def parse_toc(pdf: Path, toc_pages: list[int]) -> tuple[list[PartEntry], list[Ch
 
         m = RE_CHAPTER.match(line)
         if m:
-            number, title, page = int(m.group(1)), m.group(2).strip(), int(m.group(3))
+            number, title, page = int(m.group(1)), _clean_toc_text(m.group(2)), int(m.group(3))
             if title.upper() == "CONTENTS":
                 continue
             chapters.append(ChapterEntry(number, title, page))
@@ -200,20 +253,77 @@ def parse_toc(pdf: Path, toc_pages: list[int]) -> tuple[list[PartEntry], list[Ch
     return parts, chapters, front
 
 
-def scan_chapter_starts(doc: fitz.Document) -> dict[int, int]:
-    """Map chapter number -> 1-indexed PDF page, by finding the display heading.
+def body_text_size(doc: fitz.Document, sample: int = 40) -> float:
+    """Median line font size across a sample of pages.
 
-    Chapter openers set 'Chapter N' at ~25pt; nothing else in the book does.
+    Used to size the "this is a heading, not body text" threshold relative
+    to *this* book's own typography rather than a fixed point size --
+    a 9pt-body technical book and an 11pt-body academic one both set
+    headings well above their own body text, even though neither absolute
+    size transfers to the other.
     """
+    sizes: list[float] = []
+    step = max(1, doc.page_count // sample)
+    for i in range(0, doc.page_count, step):
+        sizes.extend(line.size for line in pdfutil.iter_lines(doc[i]))
+    sizes.sort()
+    return sizes[len(sizes) // 2] if sizes else 10.0
+
+
+def _heading_candidate(doc: fitz.Document, page_idx: int, threshold: float, max_lines: int = 8) -> str:
+    """Text of every above-threshold line near the top of a page, joined.
+
+    Joining matters because a chapter opener's heading is not always one
+    line: some books set a bare oversized chapter number ("1") directly
+    above the title ("Blockchain 101") as two separate large lines rather
+    than one "Chapter 1" string.
+    """
+    lines = list(pdfutil.iter_lines(doc[page_idx]))[:max_lines]
+    return " ".join(line.text for line in lines if line.size >= threshold)
+
+
+def _title_matches(candidate: str, title: str, min_ratio: float = TITLE_MATCH_RATIO) -> bool:
+    if not candidate.strip():
+        return False
+    # normalize() folds ligatures ("Eﬀects" -> "effects"), smart quotes, and
+    # accent-repair artifacts that otherwise differ between the ToC's text
+    # (usually pulled via pdftotext) and PyMuPDF's raw glyph-level extraction
+    # of the heading on its own page.
+    candidate_n = textnorm.normalize(candidate)
+    title_n = textnorm.normalize(title)
+    stripped_n = textnorm.normalize(_LEADING_ORDINAL_RE.sub("", candidate, count=1))
+    best = max(fuzz.ratio(candidate_n, title_n), fuzz.ratio(stripped_n, title_n))
+    return best >= min_ratio
+
+
+def scan_chapter_starts(doc: fitz.Document, titles: dict[int, str]) -> tuple[dict[int, int], float]:
+    """Map chapter number -> 1-indexed PDF page, by finding each chapter's
+    own (already TOC-parsed) title set in a heading-sized font.
+
+    Chapter-opener typography varies a lot between books: a literal
+    "Chapter N" string, a bare oversized number, a title-only heading with
+    no number at all. Matching against the chapter's own title -- which is
+    known ahead of time from the table of contents -- rather than a guessed
+    template is what makes this portable across book designs, since the
+    title (not the wording around it) is the one thing guaranteed to be
+    both unique and set large on its opening page.
+    """
+    body_size = body_text_size(doc)
+    threshold = max(body_size * 1.5, body_size + 4)
+    remaining = dict(titles)
     starts: dict[int, int] = {}
     for i in range(doc.page_count):
-        for line in list(pdfutil.iter_lines(doc[i]))[:4]:
-            if line.size <= 14:
-                continue
-            m = RE_CHAPTER_HEAD.match(line.text)
-            if m:
-                starts.setdefault(int(m.group(1)), i + 1)
-    return starts
+        if not remaining:
+            break
+        candidate = _heading_candidate(doc, i, threshold)
+        if not candidate:
+            continue
+        for number, title in list(remaining.items()):
+            if _title_matches(candidate, title):
+                starts[number] = i + 1
+                del remaining[number]
+                break
+    return starts, threshold
 
 
 def find_heading_page(doc: fitz.Document, wanted: str, min_size: float = 14.0) -> int | None:
@@ -235,7 +345,8 @@ def build_triage(pdf: Path) -> dict:
         raise SystemExit("FATAL: could not locate the table of contents")
 
     parts, chapters, front = parse_toc(pdf, toc_pages)
-    starts = scan_chapter_starts(doc)
+    titles = {ch.number: ch.title for ch in chapters}
+    starts, heading_threshold = scan_chapter_starts(doc, titles)
 
     if len(chapters) != len(starts):
         raise SystemExit(
@@ -256,8 +367,20 @@ def build_triage(pdf: Path) -> dict:
         raise SystemExit(f"FATAL: inconsistent page offsets across chapters: {sorted(offsets)}")
     offset = offsets.pop()
 
-    biblio_page = find_heading_page(doc, "Bibliography", min_size=16.0)
-    body_end = (biblio_page - 1) if biblio_page else doc.page_count
+    # Whichever back-matter heading (bibliography, index, appendix, ...)
+    # appears earliest marks where chapter body content stops. Only
+    # "Bibliography"/"References" gets its own emitted page -- see
+    # stage4_emit and --skip-bibliography -- but any of them must stop the
+    # last chapter from swallowing back matter it doesn't own.
+    biblio_page = find_heading_page(doc, "Bibliography", min_size=16.0) or find_heading_page(
+        doc, "References", min_size=16.0
+    )
+    back_matter_pages = [
+        p
+        for p in (biblio_page, *(find_heading_page(doc, h, min_size=16.0) for h in ("Index", "Appendix")))
+        if p
+    ]
+    body_end = (min(back_matter_pages) - 1) if back_matter_pages else doc.page_count
 
     ordered = sorted(chapters, key=lambda c: c.number)
     for part in parts:
@@ -313,14 +436,16 @@ def build_triage(pdf: Path) -> dict:
         sections=[],
     )
 
-    # Spot-check: the mapped opener page must actually read "Chapter N".
+    # Spot-check: the mapped opener page must actually carry this chapter's
+    # own title in heading-sized text -- the same test `scan_chapter_starts`
+    # used to find it, re-run here as an independent verification rather
+    # than trusted as a side effect of the search.
     spot_checks = []
     for ch in ordered:
-        text = doc[ch.pdf_page - 1].get_text()
-        first = next((l.strip() for l in text.splitlines() if l.strip()), "")
-        ok = first == f"Chapter {ch.number}"
+        heading_text = _heading_candidate(doc, ch.pdf_page - 1, heading_threshold)
+        ok = _title_matches(heading_text, ch.title)
         spot_checks.append(
-            {"chapter": ch.number, "pdf_page": ch.pdf_page, "first_line": first, "ok": ok}
+            {"chapter": ch.number, "pdf_page": ch.pdf_page, "heading_text": heading_text[:160], "ok": ok}
         )
 
     failed = [c for c in spot_checks if not c["ok"]]

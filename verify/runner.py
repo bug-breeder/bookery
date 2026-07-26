@@ -163,6 +163,7 @@ def verify_chapter(number: int, run_build: bool = False) -> ChapterReport:
             chapter_assets,
             emitted.read_text() if emitted else "",
             built,
+            config.SITE / "static",
         )
         asset_gate.detail["render"] = render
         if not render["ok"]:

@@ -130,7 +130,23 @@ def build_registry(triage: dict, emitted: list[int], assets: dict) -> Registry:
 
 
 def link_references(text: str, registry: Registry, unresolved: list[dict], page: int) -> str:
-    """Rewrite prose references into links where the target exists."""
+    """Rewrite prose references into links where the target exists.
+
+    Every prose string in this file is routed through here before its own
+    `[text](url)` syntax is built, which makes this the one place raw OCR
+    text can be escaped before it becomes Markdown. That escaping matters:
+    source prose that itself uses angle-bracket placeholder notation --
+    Bitcoin Script's "<sig> <pubkey>" pseudocode, for instance -- is
+    indistinguishable from a real (unclosed) HTML tag once it reaches
+    CommonMark's raw-HTML-inline production. Left unescaped, the HTML5
+    parser then swallows everything up to the next matching close tag (or
+    the end of the page) as that "tag"'s children, silently disappearing
+    the words themselves -- not merely the brackets -- from the reader's
+    view. Escaping here, before this function's own output ever contains a
+    "<", cannot double-escape the `<a>`/`<span>` markup other emit-stage
+    functions add afterward.
+    """
+    text = text.replace("<", "&lt;").replace(">", "&gt;")
 
     def replace_xref(match: re.Match[str]) -> str:
         whole = match.group(0)
@@ -199,15 +215,6 @@ def apply_small_caps(text: str, words: list[str]) -> str:
             text,
         )
     return text
-
-
-def escape_commonmark(text: str) -> str:
-    """Escape the few characters CommonMark would misread as markup.
-
-    Deliberately minimal: `<`, `{` and `}` are safe in CommonMark, so the
-    aggressive escaping MDX would need is not applied here.
-    """
-    return re.sub(r"(?<!\\)([*_`])", r"\\\1", text)
 
 
 # --------------------------------------------------------------------------

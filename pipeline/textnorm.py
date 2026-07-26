@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from collections import Counter
 
 # --------------------------------------------------------------------------
 # Accent repair.
@@ -260,4 +261,15 @@ def is_integer_soup(s: str, min_run: int = 6, ratio: float = 0.8) -> bool:
     if integer_soup_ratio(s) < ratio:
         return False
     # Genuine prose almost always carries sentence punctuation.
-    return not re.search(r"[.!?;:]\s", s)
+    if re.search(r"[.!?;:]\s", s):
+        return False
+    # Axis ticks are drawn from a range and so are close to all-distinct; a
+    # run dominated by one repeated value is something else wearing the same
+    # shape -- e.g. a domain-parameter listing such as "a = 00000000 00000000
+    # ... 00000000", where a curve coefficient of zero prints as eight
+    # identical all-digit hex words. That is prose describing a labelled
+    # value, not a chart's tick marks, and belongs in the reference text.
+    bare = [f for f in fields if re.fullmatch(r"\d+(?:\.\d+)?", f)]
+    if bare and Counter(bare).most_common(1)[0][1] / len(bare) > 0.5:
+        return False
+    return True
