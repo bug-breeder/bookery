@@ -624,7 +624,7 @@ def reconcile_chapter(chapter: int, pdf: Path) -> ChapterDoc:
 
     result.blocks = blocks
     _bind_captions(result)
-    _recover_unbound_figure_captions(result, new_id)
+    _recover_unbound_figure_captions(result, new_id, doc)
     _score_agreement(result, marker_regions, docling_regions)
     _collect_references(result, offset)
     return result
@@ -783,7 +783,32 @@ def _is_recoverable_content(block: Block) -> bool:
     return bool(text) and len(text.split()) <= _CONTENT_WORD_LIMIT
 
 
-def _recover_unbound_figure_captions(result: ChapterDoc, new_id) -> None:
+def _embedded_image_above(
+    doc: fitz.Document, page: int, ceiling: float, floor: float
+) -> fitz.Rect | None:
+    """Bounding box of a raster image embedded directly in the PDF page.
+
+    A pure screenshot -- a syntax-highlighted code listing, for instance --
+    carries no text layer at all, so it leaves nothing in the ordinary
+    text-row assembly for the paragraph-recovery heuristic below to consume:
+    there is no flattened text between the caption and whatever precedes it,
+    only blank space. PyMuPDF's own image inventory still knows exactly
+    where such an image sits on the page, independent of either extractor's
+    layout model having missed it, so it is used as a last-resort source of
+    the figure's extent when no recoverable text is found.
+    """
+    best = None
+    for info in doc[page - 1].get_image_info():
+        bbox = fitz.Rect(info["bbox"])
+        if bbox.y1 <= floor + 6.0 and bbox.y0 >= ceiling - 6.0:
+            if best is None or bbox.y0 < best.y0:
+                best = bbox
+    return best
+
+
+def _recover_unbound_figure_captions(
+    result: ChapterDoc, new_id, doc: fitz.Document
+) -> None:
     """Crop the page region above a caption neither extractor ever boxed.
 
     Some exhibits are neither a picture nor a TeX-tabular grid: a simulation
@@ -809,6 +834,11 @@ def _recover_unbound_figure_captions(result: ChapterDoc, new_id) -> None:
     is what keeps an entire page of unrelated prose from being pulled into
     the crop when nothing else -- no heading, no other caption -- separates
     it from the table above the caption.
+
+    A screenshot with no text layer at all (Chapter 19's Solidity code
+    listing) leaves no paragraph to consume here either, so as a last resort
+    the PDF's own embedded-image inventory is checked for a raster image
+    sitting in the gap between the caption and whatever precedes it.
     """
     by_page: dict[int, list[Block]] = {}
     for block in result.blocks:
@@ -832,15 +862,21 @@ def _recover_unbound_figure_captions(result: ChapterDoc, new_id) -> None:
             while probe >= 0 and ordered[probe].bbox and _is_recoverable_content(ordered[probe]):
                 consumed.insert(0, ordered[probe])
                 probe -= 1
-            if not consumed:
-                continue
 
-            bbox = (
-                min(b.bbox[0] for b in consumed),
-                min(b.bbox[1] for b in consumed),
-                max(b.bbox[2] for b in consumed),
-                max(b.bbox[3] for b in consumed),
-            )
+            if consumed:
+                bbox = (
+                    min(b.bbox[0] for b in consumed),
+                    min(b.bbox[1] for b in consumed),
+                    max(b.bbox[2] for b in consumed),
+                    max(b.bbox[3] for b in consumed),
+                )
+            else:
+                ceiling = ordered[probe].bbox[3] if probe >= 0 and ordered[probe].bbox else 0.0
+                image_bbox = _embedded_image_above(doc, page, ceiling, block.bbox[1])
+                if image_bbox is None:
+                    continue
+                bbox = (image_bbox.x0, image_bbox.y0, image_bbox.x1, image_bbox.y1)
+
             figure = Block(
                 id=new_id(),
                 type="figure",
