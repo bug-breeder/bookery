@@ -1,0 +1,14 @@
+# Core pipeline
+PyMuPDF>=1.24
+Pillow>=10.0
+numpy>=1.26
+rapidfuzz>=3.9
+
+# Verification / tests
+pytest>=8.0
+
+# Optional heavy extraction backends (see README "Optional heavy extraction
+# backends"). Uncomment if you need the Marker or Docling fallback path.
+# torch
+# marker-pdf
+# docling

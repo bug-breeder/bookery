@@ -1,0 +1,48 @@
+@import 'katex/dist/katex.min.css';
+
+:root {
+  --ifm-color-primary: #2b5797;
+  --ifm-code-font-size: 95%;
+  --ifm-font-size-base: 17px;
+  --ifm-line-height-base: 1.7;
+}
+
+[data-theme='dark'] {
+  --ifm-color-primary: #8ab4f8;
+}
+
+/* Figures are cropped from the page at 300dpi and can be wide; keep them
+   inside the content column and centred. */
+.markdown img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 1.5rem auto 0.5rem;
+}
+
+/* Caption text emitted immediately after a figure. */
+.figure-caption {
+  display: block;
+  font-size: 0.9rem;
+  text-align: center;
+  color: var(--ifm-color-emphasis-700);
+  margin-bottom: 1.75rem;
+}
+
+/* Small-caps host names such as the Arpanet nodes extract lowercased. They
+   are presented in small caps rather than being rewritten. */
+.node {
+  font-variant: small-caps;
+}
+
+/* Lettered sub-parts of an exercise. Indented here rather than in the
+   Markdown, where leading spaces would become a code block. */
+.exercise-part {
+  display: block;
+  margin: 0.75rem 0 0.75rem 2rem;
+}
+
+.markdown table {
+  display: table;
+  margin: 1.25rem auto;
+}

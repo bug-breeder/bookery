@@ -1,0 +1,33 @@
+# Source PDFs and all derived artifacts stay local/private -- never commit
+# book content to this repo.
+pdf/
+*.pdf
+work/
+extract/
+reconcile/
+tmp/
+reports/
+site/docs/
+site/static/img/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+
+# Node / Docusaurus
+node_modules/
+site/.docusaurus/
+site/build/
+site/.cache-loader/
+npm-debug.log*
+yarn-error.log*
+
+# Model caches (can be tens of GB)
+.cache/
+models/
+
+# OS
+.DS_Store
