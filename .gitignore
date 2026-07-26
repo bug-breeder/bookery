@@ -9,6 +9,8 @@ tmp/
 reports/
 site/docs/
 site/static/img/
+/PROGRESS.md
+/MANIFEST.json
 
 # Python
 .venv/

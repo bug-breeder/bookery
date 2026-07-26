@@ -28,7 +28,7 @@ STATIC_IMG = STATIC / "img"
 REPORTS = ROOT / "reports"
 OVERRIDES = ROOT / "overrides"
 
-DEFAULT_PDF = PDF_DIR / "networks-book.pdf"
+DEFAULT_PDF = PDF_DIR / "book.pdf"
 TRIAGE_JSON = WORK / "triage.json"
 ASSETS_JSON = WORK / "assets.json"
 MANIFEST_JSON = ROOT / "MANIFEST.json"

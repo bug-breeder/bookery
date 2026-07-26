@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
-# Fetch the validation-fixture PDF. The PDF is never committed to the repo.
-#
-# The book is posted freely by its authors but remains copyright Cambridge
-# University Press. See README.md, "Licensing".
+# Fetch a source PDF into pdf/ for the pipeline to run against. PDFs are
+# never committed to this repo (see .gitignore) -- check the license of
+# whatever you point this at before doing anything with the output beyond
+# local, personal use.
 set -euo pipefail
 
-URL="${1:-https://www.cs.cornell.edu/home/kleinber/networks-book/networks-book.pdf}"
+if [[ $# -lt 1 ]]; then
+  echo "usage: $0 <pdf-url> [dest-dir=pdf]" >&2
+  exit 1
+fi
+
+URL="$1"
 DEST_DIR="${2:-pdf}"
 FILENAME="$(basename "$URL")"
 DEST="$DEST_DIR/$FILENAME"

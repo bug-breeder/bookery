@@ -287,10 +287,11 @@ def emit_chapter(
     # strips it from the document id. Setting the id explicitly keeps the
     # chapter number in the route, which the cross-reference links rely on.
     title = display_title(meta)
+    book_title = triage["source"].get("title") or "this book"
     description = (
-        "Preface to Networks, Crowds, and Markets."
+        f"Preface to {book_title}."
         if meta["number"] == 0
-        else f"Chapter {meta['number']} of Networks, Crowds, and Markets."
+        else f"Chapter {meta['number']} of {book_title}."
     )
     lines.append(f"id: {chapter:02d}-{slugify(meta['title'])}")
     lines.append(f'title: "{title}"')
@@ -512,24 +513,24 @@ def emit_home(triage: dict, emitted: list[int]) -> Path:
     """
     bm = triage["boundary_map"]
     by_number = {c["number"]: c for c in bm["chapters"]}
+    source = triage.get("source", {})
+    book_title = source.get("title") or "This Book"
+    author = source.get("author")
+    byline = f"by {author}. " if author else ""
     lines = [
         "---",
         "id: index",
-        'title: "Networks, Crowds, and Markets"',
+        f'title: "{book_title}"',
         "sidebar_label: Overview",
         "sidebar_position: 0",
         "slug: /",
         "---",
         "",
-        "# Networks, Crowds, and Markets",
+        f"# {book_title}",
         "",
-        "Reasoning about a Highly Connected World, by David Easley and Jon",
-        "Kleinberg. This site is a local, automatically generated transcription",
-        "used to validate an extraction pipeline.",
-        "",
-        "> **Licensing.** The source PDF is published freely by its authors, but",
-        "> the book is copyright Cambridge University Press. This build is a local",
-        "> validation artifact and is not for publication or redeployment.",
+        f"{byline}This site is a local, automatically generated transcription "
+        "produced by an extraction-and-verification pipeline. Check the "
+        "licensing terms of the source PDF before distributing this build.",
         "",
         f"Processed so far: {len(emitted)} of {len(bm['chapters'])} chapters.",
         "",

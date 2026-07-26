@@ -1,9 +1,6 @@
 # Bookery
 
 Bookery turns a large PDF book into a fidelity-checked Docusaurus v3 site.
-It was built and battle-tested against an 833-page, 25-chapter academic
-textbook, but the pipeline itself is domain-agnostic: nothing in this
-repository is specific to that book, and no book content ships here.
 
 "Fidelity-checked" means every chapter must pass an eight-gate verification
 harness before it's considered done — coverage, numeric-token, structural,
@@ -19,37 +16,62 @@ get *approximately* right and very easy to get *silently* wrong: a dropped
 sub-caption, a mis-OCR'd exponent, a table row that merges into a paragraph.
 This pipeline assumes every one of those failure modes will happen and tries
 to catch it with a check that could have failed, rather than a prose
-description of what should have happened.
+description of what should have happened. See [ARCHITECTURE.md](./ARCHITECTURE.md)
+for the design decisions and the specific defect classes it guards against.
 
 ## Pipeline stages
 
 | Stage | Module | Responsibility |
 | --- | --- | --- |
-| 0 | `pipeline/stage0_acquire.py` | Fetch/validate the source PDF, split into per-chapter page ranges. |
-| 1 | `pipeline/stage1_extract.py` | Extract raw text/layout per page (PyMuPDF, with optional Marker/Docling backends for harder layouts). |
-| 2 | `pipeline/stage2_reconcile.py` | Reconcile extractor output into typed blocks (paragraphs, headings, captions, matrices, equations, lists). |
+| 0 | `pipeline/stage0_acquire.py` | Parse the table of contents and validate a chapter/part page-boundary map against the rendered pages. |
+| 1 | `pipeline/stage1_extract.py` | Dual extraction: [Marker](https://github.com/VikParuchuri/marker) and [Docling](https://github.com/docling-project/docling) run independently over each chapter and are cross-checked against each other. |
+| 2 | `pipeline/stage2_reconcile.py` | Reconcile the two extractors' output — plus the PDF's own text layer, which is the source of truth for prose — into typed blocks (paragraphs, headings, captions, matrices, equations, lists). |
 | 3 | `pipeline/stage3_assets.py` | Crop and export figure/table images referenced by reconciled blocks. |
 | 4 | `pipeline/stage4_emit.py` | Emit Docusaurus-ready Markdown + sidebar/nav config. |
 | — | `verify/` | Independent reference-text reconstruction and the eight-gate verification runner (`verify/runner.py`). |
 
-Run `python -m pipeline.status` after any stage to regenerate a progress
-report from the on-disk gate results.
-
 ## Getting started
 
-```bash
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+Dependencies are managed with [uv](https://docs.astral.sh/uv/). The default
+dependency set includes Marker and Docling (both pull in `torch`), since dual
+extraction is the pipeline's core technique — the first `uv sync` will
+download several GB of packages and model weights.
 
-python -m pipeline.stage0_acquire --pdf path/to/your-book.pdf
-python -m pipeline.stage1_extract --chapter 1
-python -m pipeline.stage2_reconcile --chapter 1
-python -m pipeline.stage3_assets --chapter 1
-python -m pipeline.stage4_emit --chapter 1
-python -m verify.runner --build --chapter 1
+```bash
+uv sync --extra dev   # or: --extra dev --extra marker-only / --extra docling-only,
+                       # if you only want one extractor and plan to run
+                       # `--only marker` / `--only docling` everywhere below
+
+uv run bookery build --pdf path/to/your-book.pdf --all
+uv run bookery verify --all --build
 
 cd site && yarn install && yarn start
 ```
+
+`bookery build` is the whole pipeline in one command: acquire (if needed) →
+extract → reconcile → assets → emit → verify, for the chapter(s) you ask
+for. It re-invokes the same stage modules a manual run would, so it's just
+the convenient path — see below for running stages individually.
+
+### Running stages individually
+
+Useful when iterating on one stage without re-running everything upstream,
+since each stage's output is cached to `work/` and skipped on the next
+run unless you pass `--force` (stage 1) or change the input.
+
+```bash
+uv run bookery acquire --pdf path/to/your-book.pdf
+uv run bookery extract --chapter 1        # or --all
+uv run bookery reconcile --chapter 1
+uv run bookery assets --chapter 1
+uv run bookery emit --all                 # always needs every chapter, see ARCHITECTURE.md
+uv run bookery verify --chapter 1 --build
+uv run bookery status                     # regenerate PROGRESS.md from the gate reports
+```
+
+Each of these is a thin wrapper around the underlying stage module, which is
+still directly runnable if you need a flag `bookery` doesn't expose yet, e.g.
+`uv run python -m pipeline.stage1_extract --chapter 1 --only docling`.
 
 `site/` is a Docusaurus v3 scaffold pre-wired for this pipeline's output
 (math via `remark-math`/`rehype-katex`, `onBrokenLinks: 'throw'` so a lost
@@ -57,25 +79,18 @@ cross-reference fails the build instead of warning). It ships without any
 `docs/` content — stage 4 populates that directory when you run it against
 your own PDF.
 
-## Optional heavy extraction backends
-
-`pipeline/stage1_extract.py` can fall back to
-[Marker](https://github.com/VikParuchuri/marker) or
-[Docling](https://github.com/docling-project/docling) for pages the default
-PyMuPDF text-layer extraction handles poorly (e.g. scanned pages). These are
-optional, heavy (`torch`-based) dependencies — install them only if you need
-that path; see the lazy imports in `stage1_extract.py`.
-
 ## Tests
 
 ```bash
-pytest
+uv run pytest
 ```
 
-`tests/test_artifacts.py` asserts structural/content invariants against
-pipeline output fixtures. It expects you to have already run the pipeline
-end-to-end on a PDF of your own to generate those fixtures; no fixture data
-is bundled here, since none of it is checked into this repository.
+`tests/` covers the pure text-normalisation functions (`pipeline/textnorm.py`)
+with synthetic inputs — accent repair, ligature/quote/dash normalisation,
+numeric-token extraction, hyphenation rejoining, and the figure-vs-prose
+"integer soup" heuristic. It intentionally doesn't ship fixtures derived from
+any specific PDF; add your own regression tests against your book's actual
+extraction output as you find defects, following this file's pattern.
 
 ## License
 

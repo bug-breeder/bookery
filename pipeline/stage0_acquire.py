@@ -84,6 +84,10 @@ def run(cmd: list[str]) -> str:
     return proc.stdout
 
 
+def _title_from_filename(pdf: Path) -> str:
+    return re.sub(r"[-_]+", " ", pdf.stem).strip().title()
+
+
 def probe_info(pdf: Path) -> dict:
     out = run(["pdfinfo", str(pdf)])
     info: dict[str, str] = {}
@@ -330,6 +334,10 @@ def build_triage(pdf: Path) -> dict:
             "path": str(pdf.relative_to(config.ROOT)),
             "sha256": run(["shasum", "-a", "256", str(pdf)]).split()[0],
             "bytes": pdf.stat().st_size,
+            # Falls back to a title-cased filename when the PDF carries no
+            # Title metadata, so the emitted site never hardcodes a book name.
+            "title": info.get("title") or _title_from_filename(pdf),
+            "author": info.get("author"),
         },
         "pdfinfo": info,
         "page_count": doc.page_count,
