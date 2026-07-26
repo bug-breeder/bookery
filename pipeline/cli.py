@@ -15,11 +15,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 
-from . import config
+from . import config, readme as readme_mod
 
 
 def _run(argv: list[str]) -> None:
@@ -122,6 +123,58 @@ def cmd_status(_args: argparse.Namespace) -> None:
     _run(_python("pipeline.status"))
 
 
+def cmd_readme(args: argparse.Namespace) -> None:
+    readme_mod.write(force=args.force)
+
+
+# --------------------------------------------------------------------------
+# `bookery view` -- the one command to actually look at the site.
+# --------------------------------------------------------------------------
+
+
+def _detect_package_manager() -> str:
+    if (config.SITE / "yarn.lock").exists():
+        return "yarn"
+    if (config.SITE / "pnpm-lock.yaml").exists() and shutil.which("pnpm"):
+        return "pnpm"
+    if (config.SITE / "package-lock.json").exists():
+        return "npm"
+    return "yarn" if shutil.which("yarn") else "npm"
+
+
+def _pm_script(pm: str, script: str) -> list[str]:
+    return [pm, script] if pm == "yarn" else [pm, "run", script]
+
+
+def _run_in_site(argv: list[str]) -> None:
+    print(f"$ (cd {config.SITE.relative_to(config.ROOT)} && {' '.join(argv)})", flush=True)
+    result = subprocess.run(argv, cwd=config.SITE)
+    if result.returncode != 0:
+        raise SystemExit(result.returncode)
+
+
+def cmd_view(args: argparse.Namespace) -> None:
+    if not (config.SITE / "package.json").exists():
+        raise SystemExit(f"{config.SITE}/package.json not found -- is this a bookery project?")
+    if not (config.SITE / "docs").exists():
+        print(
+            "warning: site/docs/ does not exist yet -- run `bookery emit --all` "
+            "first, or this will start an empty site.",
+            flush=True,
+        )
+
+    pm = _detect_package_manager()
+    if args.reinstall or not (config.SITE / "node_modules").exists():
+        _run_in_site([pm, "install"])
+
+    port_args = ["--", "--port", str(args.port)] if args.port else []
+    if args.build:
+        _run_in_site(_pm_script(pm, "build"))
+        _run_in_site(_pm_script(pm, "serve") + port_args)
+    else:
+        _run_in_site(_pm_script(pm, "start") + port_args)
+
+
 def cmd_build(args: argparse.Namespace) -> None:
     """Acquire (if needed) -> extract -> reconcile -> assets -> emit -> verify.
 
@@ -155,8 +208,8 @@ def cmd_build(args: argparse.Namespace) -> None:
         )
 
     print(
-        "\nDone. `bookery status` for the progress table, "
-        "`cd site && yarn install && yarn start` to preview."
+        "\nDone. `bookery status` for the progress table, `bookery readme` for a "
+        "starter README (first run only), `bookery view` to open the site."
     )
 
 
@@ -203,6 +256,20 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("status", help="regenerate PROGRESS.md from the gate reports")
     p.set_defaults(func=cmd_status)
+
+    p = sub.add_parser(
+        "readme", help="write a starter README.md for this book (once; needs --force after)"
+    )
+    p.add_argument("--force", action="store_true", help="overwrite an existing README.md")
+    p.set_defaults(func=cmd_readme)
+
+    p = sub.add_parser("view", help="install JS deps if needed and open the site")
+    p.add_argument(
+        "--build", action="store_true", help="production build + serve, instead of the dev server"
+    )
+    p.add_argument("--reinstall", action="store_true", help="reinstall JS deps even if present")
+    p.add_argument("--port", type=int, help="pass a specific port through to Docusaurus")
+    p.set_defaults(func=cmd_view)
 
     p = sub.add_parser(
         "build",

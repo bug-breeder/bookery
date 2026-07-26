@@ -8,7 +8,7 @@ files drift the moment someone forgets to update them; this one cannot.
 Design intent lives in ARCHITECTURE.md and is written by hand. Run state
 lives here and is generated. The two must not be mixed.
 
-Run:  python -m pipeline.status
+Run:  python -m pipeline.status   (or: bookery status)
 """
 
 from __future__ import annotations
@@ -17,56 +17,6 @@ import json
 from dataclasses import dataclass
 
 from . import config
-
-# Phase definitions are intent, not state: which chapter is used to prove which
-# capability, and in what order. The *state* of each phase is computed from the
-# gate reports below.
-PHASES: list[dict] = [
-    {
-        "number": 0,
-        "name": "Foundations",
-        "goal": "Environment, scaffold, page/chapter triage, 8-gate harness",
-        "chapters": [],
-        "done_when": "harness",
-    },
-    {
-        "number": 1,
-        "name": "Prose pilot",
-        "goal": "One ordinary chapter green on all eight gates",
-        "chapters": [2],
-    },
-    {
-        "number": 2,
-        "name": "Tables",
-        "goal": "Payoff matrices emitted as Markdown tables, every matrix verified",
-        "chapters": [6],
-    },
-    {
-        "number": 3,
-        "name": "Mathematics",
-        "goal": "Spectral chapter with every equation KaTeX-clean under strict mode",
-        "chapters": [14],
-    },
-    {
-        "number": 4,
-        "name": "Front matter",
-        "goal": "Overview chapter and the Preface",
-        "chapters": [1, 0],
-    },
-    {
-        "number": 5,
-        "name": "Bulk run",
-        "goal": "The remaining chapters, batched by part",
-        "chapters": "rest",
-    },
-    {
-        "number": 6,
-        "name": "Ship",
-        "goal": "Search, MANIFEST.json, README, accessibility and site polish",
-        "chapters": [],
-        "done_when": "manual",
-    },
-]
 
 GATE_NAMES = (
     "text_coverage",
@@ -109,7 +59,7 @@ def _chapter_state(chapter: dict, assets: dict) -> ChapterState:
     docling = (config.EXTRACT_DIR / "docling" / f"{cid}.json").exists()
     reconciled = (config.RECONCILE_DIR / f"{cid}.json").exists()
     # Presence of the key means stage3 ran for this chapter, even if it found
-    # zero figures (the Preface). An empty list is a real, checked result,
+    # zero figures (e.g. a preface). An empty list is a real, checked result,
     # not the same thing as the stage never having run.
     has_assets = cid in assets
     emitted = bool(sorted(config.DOCS.rglob(f"{number:02d}-*.md"))) if config.DOCS.exists() else False
@@ -145,40 +95,32 @@ def _chapter_state(chapter: dict, assets: dict) -> ChapterState:
     )
 
 
-def _phase_state(phase: dict, states: dict[int, ChapterState]) -> str:
-    if phase.get("done_when") == "harness":
-        return "complete" if config.TRIAGE_JSON.exists() else "not started"
-    if phase.get("done_when") == "manual":
-        return "not started"
+def chapter_states(triage: dict) -> dict[int, ChapterState]:
+    bm = triage["boundary_map"]
+    assets = json.loads(config.ASSETS_JSON.read_text()) if config.ASSETS_JSON.exists() else {}
+    return {c["number"]: _chapter_state(c, assets) for c in bm["chapters"]}
 
-    chapters = phase["chapters"]
-    if chapters == "rest":
-        claimed = {n for p in PHASES if isinstance(p["chapters"], list) for n in p["chapters"]}
-        chapters = [n for n in states if n not in claimed]
 
-    if not chapters:
-        return "not started"
-    green = [n for n in chapters if states[n].is_green]
-    started = [n for n in chapters if states[n].status != "not started"]
-
-    if len(green) == len(chapters):
-        return "complete"
-    if started:
-        return f"in progress ({len(green)}/{len(chapters)} green)"
-    return "not started"
+def summary(triage: dict) -> dict:
+    """Chapter/page green counts, cheap enough to call from `bookery readme`."""
+    states = chapter_states(triage)
+    green = [s for s in states.values() if s.is_green]
+    total_pages = sum(s.pages for s in states.values())
+    green_pages = sum(s.pages for s in green)
+    return {
+        "chapters_green": len(green),
+        "chapters_total": len(states),
+        "pages_green": green_pages,
+        "pages_total": total_pages,
+    }
 
 
 def build() -> str:
     triage = json.loads(config.TRIAGE_JSON.read_text())
-    bm = triage["boundary_map"]
-    assets = json.loads(config.ASSETS_JSON.read_text()) if config.ASSETS_JSON.exists() else {}
-
-    states = {c["number"]: _chapter_state(c, assets) for c in bm["chapters"]}
+    states = chapter_states(triage)
     green = [s for s in states.values() if s.is_green]
     total_pages = sum(s.pages for s in states.values())
     green_pages = sum(s.pages for s in green)
-    preface_state = states.get(0)
-    preface_status = preface_state.status if preface_state else "not started"
 
     bibliography = 0
     bib_path = config.DOCS / "bibliography.md"
@@ -190,38 +132,25 @@ def build() -> str:
     rows: list[str] = [
         "# Progress",
         "",
-        "Generated by `python -m pipeline.status`. Do not edit by hand: every",
-        "value is read back from the pipeline's artifacts and gate reports, so a",
-        "chapter cannot be recorded as done while its gates disagree. The design",
-        "intent and conventions are in ARCHITECTURE.md.",
+        "Generated by `bookery status` (`python -m pipeline.status`). Do not edit",
+        "by hand: every value is read back from the pipeline's artifacts and gate",
+        "reports, so a chapter cannot be recorded as done while its gates",
+        "disagree. Design intent and conventions are in ARCHITECTURE.md.",
         "",
         f"- Chapters green: **{len(green)} of {len(states)}**",
-        f"- Chapter pages green: **{green_pages} of {total_pages}** "
-        f"({green_pages / total_pages:.1%})",
-        f"- Bibliography entries: {bibliography}",
-        f"- Preface: {preface_status}",
+    ]
+    if total_pages:
+        rows.append(
+            f"- Chapter pages green: **{green_pages} of {total_pages}** "
+            f"({green_pages / total_pages:.1%})"
+        )
+    if bibliography:
+        rows.append(f"- Bibliography entries: {bibliography}")
+
+    rows += [
         "",
         "A chapter is *green* only when all eight gates pass. `visual` reports",
         "REVIEWED once every flagged page has an adjudication verdict on record.",
-        "",
-        "## Phases",
-        "",
-        "| Phase | Name | Goal | Chapters | State |",
-        "| --- | --- | --- | --- | --- |",
-    ]
-
-    for phase in PHASES:
-        chapters = phase["chapters"]
-        if chapters == "rest":
-            claimed = {n for p in PHASES if isinstance(p["chapters"], list) for n in p["chapters"]}
-            chapters = [n for n in states if n not in claimed]
-        listed = ", ".join(str(n) for n in chapters) if chapters else "-"
-        state = _phase_state(phase, states)
-        rows.append(
-            f"| {phase['number']} | {phase['name']} | {phase['goal']} | {listed} | {state} |"
-        )
-
-    rows += [
         "",
         "## Chapters",
         "",
@@ -252,22 +181,6 @@ def build() -> str:
     rows += ["", "## Outstanding review items", ""]
     rows += outstanding or ["None. Every processed chapter is fully adjudicated."]
 
-    rows += [
-        "",
-        "## Known limitations",
-        "",
-        "- Marker runs in fast mode with no LLM pass; equation-heavy chapters are",
-        "  the weakest case and are attacked in phase 3 before the bulk run.",
-        "- Docling's layout model is pinned to CPU because its float64 tensors are",
-        "  unsupported on MPS.",
-        "- The scanned-PDF path, where model text would become primary instead of",
-        "  the text layer, is not exercised by this fixture.",
-        "- An indented list distinguished only by layout, not by a recurring marker",
-        "  pattern (the Preface's weekly schedule), is reconciled as one flowing",
-        "  paragraph rather than separate list lines. No content is lost -- every",
-        "  gate is token- and number-exact -- but it reads as a wall of text where",
-        "  the source prints one line per week.",
-    ]
     return "\n".join(rows) + "\n"
 
 

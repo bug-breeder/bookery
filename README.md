@@ -82,18 +82,19 @@ download several GB of packages and model weights.
 git clone https://github.com/bug-breeder/bookery.git && cd bookery
 uv sync --extra dev
 
-uv run bookery build --pdf path/to/your-book.pdf --all
-uv run bookery verify --all --build
-
-cd site && yarn install && yarn start
+uv run bookery build --pdf path/to/your-book.pdf --all   # every stage, every chapter
+uv run bookery readme                                    # starter README.md for this book
+uv run bookery view                                      # installs JS deps + opens the site
 ```
 
-`bookery build` is the whole pipeline in one command: acquire (if needed) →
-extract → reconcile → assets → emit → verify, for whichever chapters you ask
-for. It re-invokes the same stage modules a manual run would — it's a
-convenience wrapper, not a reimplementation — so `uv run python -m
+That's the whole thing: one command to process every chapter, one to get a
+project README, one to look at the result. `bookery build` is acquire (if
+needed) → extract → reconcile → assets → emit → verify, chained — it
+re-invokes the same stage modules a manual run would, so `uv run python -m
 pipeline.stage1_extract --chapter 1 --only docling` still works directly
-whenever you need a flag the wrapper doesn't expose yet.
+whenever you need a flag the wrapper doesn't expose yet. `--all` processes
+every chapter; pass explicit `--chapter N` (repeatable) only when you
+deliberately want to work on one chapter at a time.
 
 Only want one extractor backend? `uv sync --extra dev --extra marker-only`
 (or `--extra docling-only`) skips installing the other, and pair it with
@@ -109,9 +110,16 @@ bookery assets    [--chapter N ... | --all] [--pdf FILE]
 bookery emit      [--chapter N ... | --all] [--pdf FILE] [--skip-bibliography]
 bookery verify    [--chapter N ... | --all] [--build]
 bookery status                                   # regenerate PROGRESS.md
+bookery readme    [--force]                      # starter README.md for this book
+bookery view      [--build] [--reinstall] [--port N]   # the one command to look at it
 bookery build     [--chapter N ... | --all] [--pdf FILE] [--force] [--only ...]
                   [--skip-bibliography] [--skip-verify] [--site-build]
 ```
+
+`bookery view` detects whichever package manager matches `site/`'s lockfile
+(npm/yarn/pnpm), installs JS dependencies on first run (or with
+`--reinstall`), and starts the Docusaurus dev server. Pass `--build` for a
+production build served as static files instead.
 
 `--chapter` is repeatable; `--all` resolves every chapter from
 `work/triage.json` (i.e. whatever `acquire` found). Note that `emit` always
