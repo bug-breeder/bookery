@@ -230,7 +230,27 @@ def _parse_textual_equation(html_src: str, bbox: tuple) -> "Equation | None":
     )
 
 
+def _looks_malformed(latex: str) -> bool:
+    """True for LaTeX that cannot possibly render, before KaTeX is even asked.
+
+    Marker's fast-mode math OCR occasionally emits a `\\begin{array}{...}`
+    with no matching `\\end{array}` and no row content at all -- typically a
+    small payoff grid it misread as one enormous column spec. That block is
+    recovered properly by our own PDF-text-layer matrix detection, so the
+    equation candidate is simply noise; returning None here lets it fall
+    through rather than reaching Gate 5 as a guaranteed, uninformative
+    failure.
+    """
+    if latex.count("{") != latex.count("}"):
+        return True
+    if r"\begin{" in latex and r"\end{" not in latex:
+        return True
+    return False
+
+
 def _finish_equation(html_src: str, latex: str, bbox: tuple) -> "Equation | None":
+    if _looks_malformed(latex):
+        return None
 
     label: str | None = None
     match = RE_TRAILING_QUAD_LABEL.search(latex)

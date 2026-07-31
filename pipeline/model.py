@@ -61,6 +61,17 @@ class Block:
 
     # Structural extras, only set where meaningful.
     label: str | None = None          # "2.4" for Figure 2.4
+    # Which keyword the PDF's own caption used -- "figure" or "table". Kept
+    # apart from `type` because the two classify different things: `type`
+    # says how the block is *rendered* (a bitmap crop, a recovered payoff
+    # grid), while `label_kind` says what the book itself *called* it. A
+    # book that numbers figures and tables in independent sequences (so
+    # "Figure 2.1" and "Table 2.1" both exist) needs both to route each
+    # exhibit to the right anchor prefix and cross-reference registry;
+    # collapsing them the way earlier books could get away with -- every
+    # captioned exhibit assumed to be a "Figure" -- silently overwrites one
+    # exhibit's anchor and asset file with the other's.
+    label_kind: str | None = None     # "figure" or "table"
     level: int | None = None          # heading depth
     anchor: str | None = None         # "fig-2-4"
     asset: str | None = None          # "img/ch02/fig-2-4.png"
@@ -97,16 +108,25 @@ class ChapterDoc:
     degraded_reason: str | None = None
 
     def counts(self) -> dict:
-        # Matrices count as figures because that is what the book calls them:
-        # every one carries a "Figure N.N" caption and is cross-referenced as a
-        # figure. Counting them as tables would make this disagree with the
-        # PDF's own captions, which is precisely what the structural gate
-        # exists to compare against.
+        # A figure or matrix block counts as a "table" only if the PDF's own
+        # caption called it one: some books number figures and tables in
+        # independent sequences that collide ("Figure 2.1" and "Table 2.1"
+        # both exist), so the caption keyword -- not the rendering `type` --
+        # is what the structural gate must compare against the PDF's own
+        # counts.
         return {
             "figures": [
-                b.label for b in self.blocks if b.type in ("figure", MATRIX) and b.label
+                b.label
+                for b in self.blocks
+                if b.type in ("figure", MATRIX) and b.label and b.label_kind != "table"
             ],
-            "tables": [b.label for b in self.blocks if b.type == "table" and b.label],
+            "tables": [
+                b.label
+                for b in self.blocks
+                if b.type in ("figure", MATRIX, "table")
+                and b.label
+                and b.label_kind == "table"
+            ],
             "sections": [b.label for b in self.blocks if b.type == "heading" and b.label],
             "equations": [b.label for b in self.blocks if b.type == "equation" and b.label],
             "exercises": sum(1 for b in self.blocks if b.type == "exercise"),

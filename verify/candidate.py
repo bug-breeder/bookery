@@ -37,6 +37,19 @@ _RE_HTML_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
 # Images contribute no text: their alt text is derived from the caption, which
 # is emitted separately as prose. Counting both would double the caption.
 _RE_IMAGE = re.compile(r"!\[[^\]]*\]\([^)]*\)")
+# `stage4_emit`'s interior-text fallback prints a table/figure's own PDF text
+# beneath its cropped image, for search and accessibility, whenever the block
+# couldn't be parsed into structured cells. Gate 1 (recall) and Gate 2 (exact
+# multiset equality) need opposite treatment of it: as extra candidate text
+# it can only ever help Gate 1 -- a token the reference expects but the
+# fallback's bbox-overlap trim missed still gets credited -- but it actively
+# breaks Gate 2, since the same block's numbers are also excluded from the
+# *reference* as figure/table-interior content (its OCR-recovered reading of
+# an image is no more a character-for-character transcription than an
+# equation's rendered glyphs are), so every number the fallback preserves
+# would otherwise show up as "extra" against a reference that was always
+# going to be missing it. Gate 2 therefore strips it; Gate 1 does not.
+_RE_FIGURE_DATA = re.compile(r'<span class="figure-data">.*?</span>', re.DOTALL)
 _RE_LINK = re.compile(r"\[([^\]]*)\]\([^)]*\)")
 _RE_HTML_TAG = re.compile(r"</?[A-Za-z][^>]*>")
 # Display and inline math contribute no text either, and for the same reason
@@ -80,13 +93,20 @@ _RE_BLOCKQUOTE = re.compile(r"^\s{0,3}>\s?", re.MULTILINE)
 _RE_LIST_BULLET = re.compile(r"^\s*[-*+]\s+", re.MULTILINE)
 
 
-def markdown_to_text(md: str) -> str:
-    """Plain text of an emitted chapter, with math excluded like an image."""
+def markdown_to_text(md: str, strip_figure_data: bool = False) -> str:
+    """Plain text of an emitted chapter, with math excluded like an image.
+
+    ``strip_figure_data``, when set, also drops the interior-text fallback's
+    own span (see the module-level note above `_RE_FIGURE_DATA`) -- pass
+    this for Gate 2's candidate text, but not Gate 1's.
+    """
     text = _RE_FRONTMATTER.sub("", md)
     text = _RE_H1.sub("", text)
     text = _RE_HTML_COMMENT.sub(" ", text)
     text = _RE_MDX_IMPORT.sub(" ", text)
     text = _RE_CODE_FENCE.sub(" ", text)
+    if strip_figure_data:
+        text = _RE_FIGURE_DATA.sub(" ", text)
     text = _RE_IMAGE.sub(" ", text)
     text = _RE_LINK.sub(r"\1", text)
 

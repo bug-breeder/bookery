@@ -31,10 +31,15 @@ PAD_POINTS = 4.0
 MIN_SIDE_POINTS = 24.0
 
 
-def _label_slug(label: str | None, fallback: str) -> str:
+def _label_slug(label: str | None, label_kind: str | None, fallback: str) -> str:
     if not label:
         return fallback
-    return "fig-" + label.replace(".", "-")
+    # Figures and Tables can number independently within a chapter -- some
+    # books have both a "Figure 2.1" and a "Table 2.1" -- so the prefix has
+    # to carry the keyword too, or the second crop silently overwrites the
+    # first's file under the same "fig-2-1" slug.
+    prefix = "tbl" if label_kind == "table" else "fig"
+    return f"{prefix}-" + label.replace(".", "-")
 
 
 def crop_figure(
@@ -74,6 +79,16 @@ def build_assets(chapter: int, pdf: Path) -> list[dict]:
     out_dir = config.STATIC_IMG / cid
     entries: list[dict] = []
     seen_hashes: dict[str, str] = {}
+    # A table or figure that runs onto a second printed page repeats its own
+    # label on a "(continued)" caption there -- a second, distinct block with
+    # the exact same label and kind as the first. `_label_slug` keys the
+    # output filename on label+kind alone, so without disambiguation here the
+    # continuation's crop silently overwrites the first page's file on disk
+    # under the identical name, destroying it rather than merely duplicating
+    # it (the`duplicate_image` gate check, by design, only catches two
+    # *different* blocks resolving to the same slug -- it can't see the
+    # overwrite already having happened by the time it runs).
+    used_slugs: dict[str, int] = {}
 
     figures = [b for b in model["blocks"] if b.get("type") == "figure"]
     for index, block in enumerate(figures, start=1):
@@ -106,7 +121,17 @@ def build_assets(chapter: int, pdf: Path) -> list[dict]:
             )
             continue
 
-        slug = _label_slug(block.get("label"), f"fig-unlabelled-{index:02d}")
+        slug = _label_slug(
+            block.get("label"), block.get("label_kind"), f"fig-unlabelled-{index:02d}"
+        )
+        seen_count = used_slugs.get(slug, 0)
+        used_slugs[slug] = seen_count + 1
+        if seen_count:
+            # First repeat becomes "-cont2", next "-cont3", and so on, rather
+            # than a bare running number appended to every slug -- that would
+            # also renumber (and thus break existing links/anchors to) the
+            # ordinary, non-repeating majority of figures for no reason.
+            slug = f"{slug}-cont{seen_count + 1}"
         png = out_dir / f"{slug}.png"
         webp = out_dir / f"{slug}.webp"
         pixel_width, pixel_height = crop_figure(doc, block["page"], bbox, png, webp)
@@ -114,6 +139,7 @@ def build_assets(chapter: int, pdf: Path) -> list[dict]:
         digest = hashlib.sha256(png.read_bytes()).hexdigest()
         entry = {
             "label": block.get("label"),
+            "label_kind": block.get("label_kind"),
             "block": block["id"],
             "file": f"img/{cid}/{png.name}",
             "webp": f"img/{cid}/{webp.name}",

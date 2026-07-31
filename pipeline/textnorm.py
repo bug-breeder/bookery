@@ -193,12 +193,22 @@ def numbers(s: str, drop_citations: bool = True) -> list[str]:
 _RE_BARE_INT_RUN = re.compile(r"(?:(?<=\s)|^)(\d+(?:\.\d+)?)(?=\s|$)")
 
 
+_RE_BARE_NUMBER = re.compile(r"[-\u2212]?\d+(?:\.\d+)?")
+
+
 def integer_soup_ratio(s: str) -> float:
-    """Fraction of whitespace-separated fields that are bare numbers."""
+    """Fraction of whitespace-separated fields that are bare numbers.
+
+    TeX sets a negative number's sign as U+2212 (minus sign), not the
+    ASCII hyphen, so a payoff table of negative integers ("\u221265 \u221251
+    \u221237 ...") would otherwise score as prose -- none of its fields
+    would match a digits-only pattern -- and slip past every caller of this
+    function that exists to keep such tables out of the reference text.
+    """
     fields = s.split()
     if not fields:
         return 0.0
-    bare = sum(1 for f in fields if re.fullmatch(r"\d+(?:\.\d+)?", f))
+    bare = sum(1 for f in fields if _RE_BARE_NUMBER.fullmatch(f))
     return bare / len(fields)
 
 
@@ -269,7 +279,7 @@ def is_integer_soup(s: str, min_run: int = 6, ratio: float = 0.8) -> bool:
     # ... 00000000", where a curve coefficient of zero prints as eight
     # identical all-digit hex words. That is prose describing a labelled
     # value, not a chart's tick marks, and belongs in the reference text.
-    bare = [f for f in fields if re.fullmatch(r"\d+(?:\.\d+)?", f)]
+    bare = [f for f in fields if _RE_BARE_NUMBER.fullmatch(f)]
     if bare and Counter(bare).most_common(1)[0][1] / len(bare) > 0.5:
         return False
     return True

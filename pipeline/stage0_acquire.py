@@ -37,8 +37,62 @@ RE_CHAPTER = re.compile(r"^\s*(?:Chapter\s+)?(\d{1,2})\s*:?\s+([A-Z]\S*.*?)\s{2,
 # silently dropped that section out of the table of contents. 3 consecutive
 # dot/space characters still never occurs inside natural title prose, so
 # lowering the threshold by one does not risk a false match mid-title.
-RE_SECTION = re.compile(r"^\s*(\d{1,2}\.\d{1,2})\s*(\S.*?)[.\s]{3,}(\d+)\s*$")
+RE_SECTION = re.compile(r"^\s*(\d{1,2}\.\d{1,2}(?:\.\d{1,2})?)\s*(\S.*?)[.\s]{3,}(\d+)\s*$")
 RE_PREFACE = re.compile(r"^\s*(Preface)\s{2,}([ivxl]+)\s*$")
+
+# A section/chapter title long enough to fill the whole printed line wraps
+# onto a second (sometimes third) line, with the page number following
+# whichever line the title text happens to end on. RE_SECTION/RE_CHAPTER
+# only look at one physical line, so a wrapped entry's first line ("5.5 The
+# Groucho Marx Theorem in Zero-Sum") has no trailing page number and fails
+# to match, while its continuation line ("Betting  239") doesn't start with
+# a number either -- the whole entry silently vanishes from the ToC. These
+# two patterns identify a wrapped entry's opening line so its continuation
+# can be joined back on before the real parsing loop ever sees it.
+_RE_SECTION_START = re.compile(r"^\s*\d{1,2}\.\d{1,2}(?:\.\d{1,2})?\s+\S")
+_RE_CHAPTER_START = re.compile(r"^\s*(?:Chapter\s+)?\d{1,2}\s*:?\s+[A-Z]")
+# The page number is always its own whitespace-delimited token, never a
+# suffix glued onto the last title word -- requiring that boundary (rather
+# than a bare `\d+|[ivxlcdm]+$`) matters because ordinary English words
+# routinely end in letters that are individually valid roman numerals
+# ("Iterated", "Betting", "Reasoning" all end in i/v/x/l/c/d/m), which would
+# otherwise make nearly every wrapped title's first line look like it
+# already carries a trailing page number and never get joined at all.
+_RE_PAGE_TAIL = re.compile(r"(?:^|\s)(?:\d+|[ivxlcdm]+)\s*$", re.IGNORECASE)
+
+
+def _join_wrapped_toc_lines(text: str) -> list[str]:
+    """Re-join ToC entries whose title wrapped onto a following line.
+
+    A complete entry line always ends in its page number (arabic for
+    chapters/sections, roman for the preface); a wrapped title's first line
+    does not, so it's buffered and appended to -- across as many
+    continuation lines as needed -- until one carrying the page number
+    shows up. Lines that don't look like the start of a section/chapter
+    entry are passed through untouched, so this can't accidentally swallow
+    unrelated ToC furniture (a lone "Contents" header, a part divider).
+    """
+    out: list[str] = []
+    pending: str | None = None
+    for raw in text.splitlines():
+        line = raw.rstrip()
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if pending is not None:
+            pending = f"{pending} {stripped}"
+            if _RE_PAGE_TAIL.search(stripped):
+                out.append(pending)
+                pending = None
+            continue
+        starts_entry = _RE_SECTION_START.match(line) or _RE_CHAPTER_START.match(line)
+        if starts_entry and not _RE_PAGE_TAIL.search(stripped):
+            pending = line
+            continue
+        out.append(line)
+    if pending:
+        out.append(pending)
+    return out
 
 # Headings that, if present, mark the end of chapter body content -- an
 # index or appendix is not "Bibliography", but it still isn't chapter prose
@@ -216,11 +270,7 @@ def parse_toc(pdf: Path, toc_pages: list[int]) -> tuple[list[PartEntry], list[Ch
     chapters: list[ChapterEntry] = []
     front: dict = {}
 
-    for raw in text.splitlines():
-        line = raw.rstrip()
-        if not line.strip():
-            continue
-
+    for line in _join_wrapped_toc_lines(text):
         m = RE_PREFACE.match(line)
         if m:
             front["preface_printed_page"] = m.group(2)

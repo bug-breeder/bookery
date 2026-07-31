@@ -46,10 +46,16 @@ from .model import (
 )
 
 RE_TAG = re.compile(r"<[^>]+>")
-RE_FIGURE_CAPTION = re.compile(r"^(Figure|Table)\s+(\d+\.\d+)\s*:\s*(.*)$", re.DOTALL)
+# The separator after the label varies by book/publisher -- "Figure 1.1:" in
+# some, "Figure 1.1." in others -- so both are accepted here.
+RE_FIGURE_CAPTION = re.compile(r"^(Figure|Table)\s+(\d+\.\d+)\s*[.:]\s*(.*)$", re.DOTALL)
 RE_SUBCAPTION = re.compile(r"^\(([a-z])\)\s+(.*)$")
 RE_SECTION_HEADING = re.compile(r"^(\d+\.\d+)\s+(\S.*)$")
 RE_EXERCISE_START = re.compile(r"^(\d{1,2})\.\s+\S")
+# A footnote body's own opening line: a bare number, matching
+# `verify/reference.py`'s independent ground-truth count so the structural
+# gate compares like for like.
+RE_FOOTNOTE_START = re.compile(r"^\d{1,2}\s")
 
 # Cross-references that must resolve to a live anchor. Equation references
 # are the one kind printed with the number in parentheses ("Equation
@@ -206,9 +212,20 @@ def _is_rule_artifact(bbox: fitz.Rect) -> bool:
     became a real figure's own label: the caption binder chose the header
     rule over the actual chart below it because both sat above the caption
     and the rule came first in that page's block order.
+
+    A second book's misdetected header line ran only 168pt long (a short
+    running head: "132  3 Mixed-Strategy Equilibrium", not the first
+    fixture's full-width divider), giving a 17:1 ratio that the 25:1 bar
+    misses entirely even though its short side -- under 10pt, barely a
+    single text line -- is just as characteristic of a rule as the original
+    cases. Below 12pt, the bar relaxes to 12:1: still well above anything a
+    genuine diagram's narrowest dimension would need to be to still read as
+    a figure, so this doesn't risk swallowing an intentionally thin chart.
     """
     width, height = bbox.width, bbox.height
     short, long = min(width, height), max(width, height)
+    if short < 12.0:
+        return long > 12 * short
     return short < 15.0 and long > 25 * short
 
 
@@ -316,11 +333,22 @@ def reconcile_chapter(chapter: int, pdf: Path) -> ChapterDoc:
         # tabular environment, so neither extractor reports a table here.
         # Caption positions are passed in so a one-cell game, left over after
         # iterated deletion, can be told apart from an inline number pair.
+        # Both edges are passed because a Figure's caption sits below its grid
+        # (matched against the grid's bottom) while a Table's sits above it
+        # (matched against the grid's top).
         caption_tops = tuple(
             r.bbox[1] for r in rows if RE_FIGURE_CAPTION.match(r.text)
         )
+        caption_bottoms = tuple(
+            r.bbox[3]
+            for r in rows
+            if (m := RE_FIGURE_CAPTION.match(r.text)) and m.group(1).lower() == "table"
+        )
         page_matrices = matrixlib.find_matrices(
-            pdfutil.page_lines(doc, page_no, rows=False), page_no, caption_tops
+            pdfutil.page_lines(doc, page_no, rows=False),
+            page_no,
+            caption_tops,
+            caption_bottoms,
         )
         page_equations = equations_by_page.get(page_no, [])
 
@@ -343,6 +371,20 @@ def reconcile_chapter(chapter: int, pdf: Path) -> ChapterDoc:
                 or _overlap_ratio(fitz.Rect(*m.bbox), fig.bbox) > 0.85
                 for m in page_matrices
             )
+        ]
+
+        # Marker's fast-mode math OCR occasionally misreads a small payoff
+        # grid as a single giant `\begin{array}{c|ccc...}` with no matching
+        # `\end{array}` and no row content at all -- garbage LaTeX that would
+        # fail Gate 5 for no reason, since the same region is already covered
+        # properly by our own PDF-text-layer matrix detection. Where a
+        # matrix's bbox accounts for most of an "equation" candidate's area,
+        # the equation is that misreading and is dropped in favor of the
+        # matrix.
+        page_equations = [
+            eq
+            for eq in page_equations
+            if not any(_overlap_ratio(fitz.Rect(*m.bbox), fitz.Rect(*eq.bbox)) > 0.5 for m in page_matrices)
         ]
 
         pending: list[pdfutil.Line] = []
@@ -374,12 +416,14 @@ def reconcile_chapter(chapter: int, pdf: Path) -> ChapterDoc:
                     kind = "paragraph"
 
                 label = None
+                label_kind = None
                 caption_body = None
                 anchor = None
                 level = None
                 if kind == "caption":
                     match = RE_FIGURE_CAPTION.match(text)
                     if match:
+                        label_kind = match.group(1).lower()
                         label = match.group(2)
                         caption_body = textnorm.for_output(match.group(3).strip())
                 elif kind == "heading":
@@ -402,6 +446,7 @@ def reconcile_chapter(chapter: int, pdf: Path) -> ChapterDoc:
                         source="textlayer",
                         bbox=bbox,
                         label=label,
+                        label_kind=label_kind,
                         level=level,
                         anchor=anchor,
                         caption=caption_body,
@@ -415,8 +460,23 @@ def reconcile_chapter(chapter: int, pdf: Path) -> ChapterDoc:
             rel_top = row.y0 / height
             rect = fitz.Rect(*row.bbox)
 
-            furniture_reason = page_furniture.reason_for(
-                row.text, row.y0, row.y1, row.size, body_size, height
+            # `Furniture.reason_for` is purely positional/recurrence-based --
+            # it has no notion of a line's own content -- so a genuine
+            # caption that happens to print inside the page's header zone
+            # (because the table or figure it labels is tall enough to push
+            # the caption itself up near the top edge) is otherwise
+            # indistinguishable from an actual running head at that same
+            # y-position, and gets silently dropped before this loop ever
+            # reaches the caption-matching logic below. Checked first, and
+            # unconditionally exempted, because a caption's text is unique
+            # per page and can never truly be the recurring boilerplate
+            # `reason_for` is built to catch.
+            furniture_reason = (
+                None
+                if RE_FIGURE_CAPTION.match(row.text)
+                else page_furniture.reason_for(
+                    row.text, row.y0, row.y1, row.size, body_size, height
+                )
             )
             if furniture_reason:
                 result.dropped.append(
@@ -483,12 +543,53 @@ def reconcile_chapter(chapter: int, pdf: Path) -> ChapterDoc:
                 caption_box = None
 
             # A matrix's own rows are carried by its cells, so they must not
-            # also accumulate into the surrounding prose. Containment is tested
-            # rather than overlap: matrix rows are narrow and centred, while
-            # body text spans the full column, so a wide paragraph line is
-            # never mistaken for part of the grid.
+            # also accumulate into the surrounding prose. Containment is
+            # tested first: matrix rows are narrow and centred, while body
+            # text spans the full column, so a wide paragraph line is never
+            # mistaken for part of the grid.
             if any(_contains(m.bbox, row.bbox) for m in page_matrices):
                 flush()
+                continue
+
+            # A row-side player label ("Player 1") sitting just outside the
+            # grid's left edge but on the same baseline as its first data row
+            # is fused onto that row by ordinary same-line merging, which
+            # grows the merged row wide enough to fail strict containment
+            # even though the row is still overwhelmingly the grid's own
+            # content. A high overlap ratio against the matrix -- gated on
+            # the row's height being grid-row-sized, well under the matrix's
+            # own height, so an unrelated full-column paragraph line merely
+            # passing near a matrix's edge is not swallowed by this fallback
+            # -- catches that fusion. The label itself is not thrown away:
+            # it sits entirely to one side of the matrix's own x-range, so
+            # re-querying the PDF for words confined to that margin recovers
+            # it as its own small block instead of losing it along with the
+            # grid text it was wrongly merged with.
+            fused_matrix = next(
+                (
+                    m
+                    for m in page_matrices
+                    if _overlap_ratio(fitz.Rect(*m.bbox), rect) > 0.5
+                    and (row.bbox[3] - row.bbox[1]) < 0.6 * (m.bbox[3] - m.bbox[1])
+                ),
+                None,
+            )
+            if fused_matrix is not None:
+                flush()
+                margin = fitz.Rect(row.bbox[0], row.bbox[1], fused_matrix.bbox[0], row.bbox[3])
+                if margin.x1 > margin.x0:
+                    label_text = page.get_text("text", clip=margin).strip()
+                    if label_text:
+                        page_blocks.append(
+                            Block(
+                                id=new_id(),
+                                type="paragraph",
+                                page=page_no,
+                                text=textnorm.for_output(label_text),
+                                source="textlayer",
+                                bbox=(margin.x0, row.bbox[1], margin.x1, row.bbox[3]),
+                            )
+                        )
                 continue
 
             # A display equation's own row -- including its right-margin
@@ -543,6 +644,33 @@ def reconcile_chapter(chapter: int, pdf: Path) -> ChapterDoc:
                     pending.append(row)
                     continue
                 flush()
+
+            # A footnote body is set a little smaller than body text and sits
+            # at the foot of the page -- both conditions are needed, or a
+            # small caption or node label elsewhere on the page would count
+            # too. Matched against the same shape `verify/reference.py` uses
+            # for its independent ground-truth count, so a footnote here is
+            # exactly a footnote there.
+            is_footnote_size = body_size - 3.5 <= row.size < body_size - 1.0
+            footnote_start = (
+                is_footnote_size
+                and rel_top > 0.70
+                and RE_FOOTNOTE_START.match(row.text)
+                and not textnorm.is_integer_soup(row.text)
+            )
+            if footnote_start:
+                flush()
+                pending_kind = "footnote"
+                pending.append(row)
+                continue
+            # A footnote that wraps continues on the next line at the same
+            # small size, exactly as a heading's wrap does above.
+            if pending_kind == "footnote":
+                if is_footnote_size and rel_top > 0.55:
+                    pending.append(row)
+                    continue
+                flush()
+
             if row.size > body_size + 8:
                 # Chapter opener lines ("Chapter 2" / "Graphs").
                 flush()
@@ -695,7 +823,7 @@ def _crosses_block_boundary(
 
 
 def _bind_captions(result: ChapterDoc) -> None:
-    """Attach each 'Figure N.M:' caption to the figure or matrix it describes.
+    """Attach each 'Figure N.M:'/'Table N.M:' caption to the exhibit it describes.
 
     Matrices compete for captions on equal terms with figures. Most of chapter
     6's captioned exhibits are matrices, and leaving them out of this is what
@@ -708,15 +836,54 @@ def _bind_captions(result: ChapterDoc) -> None:
         candidates = [f for f in figures if f.page == caption.page and f.caption is None]
         if not candidates:
             candidates = [f for f in figures if f.page == caption.page]
-        # A caption sits below its figure in this book; choose the nearest
-        # figure whose bottom edge is above the caption.
-        above = [
-            f for f in candidates if f.bbox and caption.bbox and f.bbox[3] <= caption.bbox[1] + 6
-        ]
-        target = None
-        if above:
-            target = min(above, key=lambda f: caption.bbox[1] - f.bbox[3])
-        elif candidates:
+
+        # A Figure's caption sits below it; a Table's sits above -- standard
+        # publishing convention, and this book follows it exactly even though
+        # it labels some payoff matrices "Table" rather than "Figure" (see
+        # matrix.py). The search direction has to follow the caption's own
+        # keyword rather than assume one convention for every captioned
+        # exhibit, or a Table's content is never found and its caption goes
+        # unresolved.
+        #
+        # The candidate test and distance metric both tolerate the region
+        # already *containing* the caption line, not just sitting cleanly
+        # past it: an extractor's own bbox for a table sometimes wraps its
+        # caption in at the top (the two get boxed as one region), which
+        # makes the table's own top edge land at or even slightly before the
+        # caption's -- failing a strict "starts below the caption's bottom"
+        # test entirely. Two tables close together on one page (this book's
+        # Tables 2.8/2.9) turned that into a caption *swap*: the true match
+        # was rejected by the strict test, so the first caption processed
+        # fell through to the second table's region instead (the only one
+        # still strictly below it), leaving the second caption's own search
+        # to fall back to whatever candidate remained -- the first table's.
+        # Clamping the gap at zero for an overlapping/containing region
+        # means it now wins ties over a merely-nearby region the same way a
+        # true zero-gap match should, without changing the ranking for the
+        # ordinary (non-overlapping) case at all.
+        if caption.label_kind == "table":
+            below = [
+                f
+                for f in candidates
+                if f.bbox and caption.bbox and f.bbox[3] >= caption.bbox[3] - 6
+            ]
+            target = (
+                min(below, key=lambda f: max(0.0, f.bbox[1] - caption.bbox[3]))
+                if below
+                else None
+            )
+        else:
+            above = [
+                f
+                for f in candidates
+                if f.bbox and caption.bbox and f.bbox[1] <= caption.bbox[1] + 6
+            ]
+            target = (
+                min(above, key=lambda f: max(0.0, caption.bbox[1] - f.bbox[3]))
+                if above
+                else None
+            )
+        if target is None and candidates:
             target = candidates[0]
 
         if target is None:
@@ -732,24 +899,39 @@ def _bind_captions(result: ChapterDoc) -> None:
         # falling back to it duplicated the figure number into its own
         # caption body, both as prose and as a self-referential link.
         target.caption = caption.caption
-        target.anchor = f"fig-{caption.label.replace('.', '-')}"
+        target.label_kind = caption.label_kind
+        # Figure and Table are independent numbering sequences in this book
+        # -- "Figure 2.1" and "Table 2.1" can both exist -- so the anchor
+        # prefix has to carry the keyword too, or the two collide on the same
+        # anchor and the same cropped-asset filename.
+        prefix = "tbl" if caption.label_kind == "table" else "fig"
+        target.anchor = f"{prefix}-{caption.label.replace('.', '-')}"
         target.alt = _alt_text(target.caption)
         target.small_caps = list(caption.small_caps)
 
         # The extractors' picture regions sometimes swallow the caption that
-        # sits beneath the drawing. Left alone, that caption's text counts as
-        # figure interior and is dropped from both the emitted page and the
-        # reference -- a loss no gate can see, because both sides lose it
-        # identically. Clipping to just above the caption keeps it as text.
-        # Sub-captions inside the drawing are left in place: they label the
-        # panels and clipping to them would cut multi-panel figures apart.
-        if target.bbox and caption.bbox and caption.bbox[1] > target.bbox[1]:
-            target.bbox = (
-                target.bbox[0],
-                target.bbox[1],
-                target.bbox[2],
-                min(target.bbox[3], caption.bbox[1] - 6.0),
-            )
+        # sits beside the drawing (below for a Figure, above for a Table).
+        # Left alone, that caption's text counts as figure interior and is
+        # dropped from both the emitted page and the reference -- a loss no
+        # gate can see, because both sides lose it identically. Clipping the
+        # edge nearest the caption keeps it as text. Sub-captions inside the
+        # drawing are left in place: they label the panels and clipping to
+        # them would cut multi-panel figures apart.
+        if target.bbox and caption.bbox:
+            if caption.label_kind == "table" and caption.bbox[3] < target.bbox[3]:
+                target.bbox = (
+                    target.bbox[0],
+                    max(target.bbox[1], caption.bbox[3] + 6.0),
+                    target.bbox[2],
+                    target.bbox[3],
+                )
+            elif caption.label_kind != "table" and caption.bbox[1] > target.bbox[1]:
+                target.bbox = (
+                    target.bbox[0],
+                    target.bbox[1],
+                    target.bbox[2],
+                    min(target.bbox[3], caption.bbox[1] - 6.0),
+                )
 
     for figure in figures:
         # An unlabelled picture region means an extractor found a drawing the
@@ -809,7 +991,10 @@ def _embedded_image_above(
 def _recover_unbound_figure_captions(
     result: ChapterDoc, new_id, doc: fitz.Document
 ) -> None:
-    """Crop the page region above a caption neither extractor ever boxed.
+    """Crop the page region beside a caption neither extractor ever boxed.
+
+    "Beside" is above the caption for a Figure and below it for a Table,
+    following the same convention `_bind_captions` uses.
 
     Some exhibits are neither a picture nor a TeX-tabular grid: a simulation
     state rendered as a grid of cells (Chapter 4's Schelling model), a plain
@@ -857,11 +1042,20 @@ def _recover_unbound_figure_captions(
                 or FLAG_UNRESOLVED_CAPTION not in block.flags
             ):
                 continue
+            # A Figure's content sits above its caption; a Table's sits below
+            # (see `_bind_captions`), so which neighbour is probed has to
+            # follow the same keyword.
+            is_table = block.label_kind == "table"
+            step = 1 if is_table else -1
             consumed: list[Block] = []
-            probe = index - 1
-            while probe >= 0 and ordered[probe].bbox and _is_recoverable_content(ordered[probe]):
-                consumed.insert(0, ordered[probe])
-                probe -= 1
+            probe = index + step
+            while (
+                0 <= probe < len(ordered)
+                and ordered[probe].bbox
+                and _is_recoverable_content(ordered[probe])
+            ):
+                consumed.append(ordered[probe])
+                probe += step
 
             if consumed:
                 bbox = (
@@ -870,13 +1064,20 @@ def _recover_unbound_figure_captions(
                     max(b.bbox[2] for b in consumed),
                     max(b.bbox[3] for b in consumed),
                 )
+            elif is_table:
+                floor = ordered[probe].bbox[1] if 0 <= probe < len(ordered) and ordered[probe].bbox else 792.0
+                image_bbox = _embedded_image_above(doc, page, block.bbox[3], floor)
+                if image_bbox is None:
+                    continue
+                bbox = (image_bbox.x0, image_bbox.y0, image_bbox.x1, image_bbox.y1)
             else:
-                ceiling = ordered[probe].bbox[3] if probe >= 0 and ordered[probe].bbox else 0.0
+                ceiling = ordered[probe].bbox[3] if 0 <= probe < len(ordered) and ordered[probe].bbox else 0.0
                 image_bbox = _embedded_image_above(doc, page, ceiling, block.bbox[1])
                 if image_bbox is None:
                     continue
                 bbox = (image_bbox.x0, image_bbox.y0, image_bbox.x1, image_bbox.y1)
 
+            prefix = "tbl" if is_table else "fig"
             figure = Block(
                 id=new_id(),
                 type="figure",
@@ -884,7 +1085,8 @@ def _recover_unbound_figure_captions(
                 source="recovered",
                 bbox=bbox,
                 label=block.label,
-                anchor=f"fig-{block.label.replace('.', '-')}",
+                label_kind=block.label_kind,
+                anchor=f"{prefix}-{block.label.replace('.', '-')}",
                 caption=block.caption,
                 alt=_alt_text(block.caption),
                 flags=[FLAG_NEEDS_VISUAL],
@@ -1015,7 +1217,8 @@ def _flag_numeric_disagreements(
     ours = Counter(
         n
         for b in result.blocks
-        if b.type in ("paragraph", "caption", "heading", "exercise", "exercise_part")
+        if b.type
+        in ("paragraph", "caption", "heading", "exercise", "exercise_part", "footnote")
         for n in textnorm.numbers(b.text)
     )
     ours += Counter(

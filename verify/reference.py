@@ -31,8 +31,10 @@ MIN_REPEATS = 3
 _RE_DIGITS = re.compile(r"\d+")
 
 # Caption openers, and sub-figure labels such as "(a) A graph on 4 nodes."
-# Both are content and are never treated as figure interior.
-RE_CAPTION_START = re.compile(r"^(Figure|Table)\s+\d+\.\d+\s*:|^\([a-z]\)\s+\S")
+# Both are content and are never treated as figure interior. The separator
+# after the label varies by book -- "Figure 1.1:" in some, "Figure 1.1." in
+# others -- so both are accepted here.
+RE_CAPTION_START = re.compile(r"^(Figure|Table)\s+\d+\.\d+\s*[.:]|^\([a-z]\)\s+\S")
 
 # A folio is a bare arabic or roman page number and nothing else.
 RE_BARE_FOLIO = re.compile(r"^(\d{1,4}|[ivxlcdm]{1,7})$", re.IGNORECASE)
@@ -42,6 +44,21 @@ RE_BARE_FOLIO = re.compile(r"^(\d{1,4}|[ivxlcdm]{1,7})$", re.IGNORECASE)
 # ("hi <- Mi1a1 + ... , (14.1)"), so it is searched for at line end rather
 # than matched against the whole line.
 RE_EQUATION_LABEL = re.compile(r"\(\s*(\d+)\.(\d+)\s*\)\s*$")
+
+# A genuine display equation is algebra: mostly variables and operators, with
+# at most a coefficient or two written as a bare number. A regression table's
+# row, by contrast, is almost nothing *but* bare numbers (estimates, standard
+# errors, t-stats) -- and every so often one coincidentally ends in something
+# shaped like, and even matching the chapter number of, a real equation label
+# ("... (0.01) 0.670 0.85 (4.14)" in chapter 4). Matching the chapter number
+# alone still lets these through when they land in the right chapter purely
+# by chance; capping how many other bare numbers may share the line catches
+# them without needing to recognise the book's own table layouts.
+_MAX_DATA_ROW_NUMBERS = 3
+
+
+def _looks_like_data_row(text: str) -> bool:
+    return len(textnorm.numbers(text)) > _MAX_DATA_ROW_NUMBERS
 
 
 
@@ -112,6 +129,18 @@ def _classify(
     equation_rects: list[fitz.Rect] = (),
 ) -> str | None:
     """Return a removal reason, or None to keep the line."""
+    # A caption is content even when it geometrically lands somewhere
+    # furniture normally lives -- inside a figure's drawing extent (a
+    # diagram's vectors overrunning the text column), or, just as real,
+    # inside the page's positional header zone whenever the table/figure it
+    # labels is tall enough to push the caption itself up near the top edge.
+    # `Furniture.reason_for` is purely positional/recurrence-based and has
+    # no way to tell a genuine one-off caption from the running head it
+    # shares a y-position with, so this must be checked, and win, before
+    # that furniture reason is ever consulted.
+    if RE_CAPTION_START.match(line.text):
+        return None
+
     reason = page_furniture.reason_for(
         line.text, line.y0, line.y1, line.size, body_size, height
     )
@@ -127,12 +156,6 @@ def _classify(
     # that frontmatter line, not twice.
     if furniture.is_chapter_opener_size(line.size, body_size):
         return "chapter_opener_heading"
-
-    # A caption is content even when it sits geometrically inside the figure's
-    # drawing extent, which happens whenever a diagram's vectors overrun the
-    # text column. Checked before the region test so it always wins.
-    if RE_CAPTION_START.match(line.text):
-        return None
 
     if figure_rects:
         rect = fitz.Rect(*line.bbox)
@@ -321,8 +344,8 @@ def build_reference(
 # Independent structural counts, taken from the PDF rather than the model.
 # --------------------------------------------------------------------------
 
-RE_FIGURE_CAPTION = re.compile(r"^Figure\s+(\d+\.\d+)\s*:", re.MULTILINE)
-RE_TABLE_CAPTION = re.compile(r"^Table\s+(\d+\.\d+)\s*:", re.MULTILINE)
+RE_FIGURE_CAPTION = re.compile(r"^Figure\s+(\d+\.\d+)\s*[.:]", re.MULTILINE)
+RE_TABLE_CAPTION = re.compile(r"^Table\s+(\d+\.\d+)\s*[.:]", re.MULTILINE)
 RE_SECTION_HEAD = re.compile(r"^(\d+\.\d+)\s+\S")
 RE_EXERCISE = re.compile(r"^\s*(\d{1,2})\.\s")
 
@@ -351,11 +374,29 @@ def _label_key(label: str) -> tuple[int, ...]:
     return tuple(int(p) for p in label.split("."))
 
 
-def count_structures(doc: fitz.Document, first_page: int, last_page: int) -> StructuralCounts:
+def count_structures(
+    doc: fitz.Document, first_page: int, last_page: int, chapter_number: int | None = None
+) -> StructuralCounts:
     """Count labelled objects directly from the PDF text layer.
 
     Captions are matched at line start on the assembled line text, which is
     why this is independent of whatever the extractors decided a caption was.
+
+    ``chapter_number``, when given, is also used to keep the equation count
+    honest: unlike a figure or table caption, a trailing "(N.N)" has no
+    distinguishing prefix of its own, so it collides with anything else a
+    book prints in that exact shape at a line's end. A statistics-heavy
+    chapter's regression tables print nothing else *but* that shape --
+    coefficient after coefficient reported as "estimate (std. error)" -- and
+    every one of those parenthesised standard errors reads as a plausible
+    equation label with no way to tell it from a real one by pattern alone.
+    A real equation's label is always "this chapter's number . its own
+    index" (see equations.py); a standard error's is whatever two digits the
+    statistic happens to round to, essentially never the current chapter's
+    own number. Requiring the match makes the false positives (chapter 3
+    alone had three: "(1.60)", "(2.93)", "(2.47)", none of them chapter 3's
+    own) disappear without needing to special-case a single book, while a
+    genuine equation -- always numbered for its own chapter -- is unaffected.
     """
     figures: list[str] = []
     tables: list[str] = []
@@ -382,16 +423,20 @@ def count_structures(doc: fitz.Document, first_page: int, last_page: int) -> Str
                 m = re.match(r"^(\d{1,2})\.\s+\S", text)
                 if m and int(m.group(1)) == exercises + 1:
                     exercises += 1
-            m = re.match(r"^Figure\s+(\d+\.\d+)\s*:", text)
+            m = RE_FIGURE_CAPTION.match(text)
             if m:
                 figures.append(m.group(1))
-            m = re.match(r"^Table\s+(\d+\.\d+)\s*:", text)
+            m = RE_TABLE_CAPTION.match(text)
             if m:
                 tables.append(m.group(1))
             # A numbered display equation's label, at the right margin of the
             # same visual row as the expression it numbers.
             m = RE_EQUATION_LABEL.search(text)
-            if m:
+            if (
+                m
+                and (chapter_number is None or int(m.group(1)) == chapter_number)
+                and not _looks_like_data_row(text)
+            ):
                 equations.append(f"{m.group(1)}.{m.group(2)}")
             # Section headings are set larger than body text.
             if line.size > body_size + 1.5:

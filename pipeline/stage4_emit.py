@@ -26,7 +26,16 @@ import fitz
 from . import config, furniture, pdfutil, textnorm
 
 RE_XREF = re.compile(
-    r"\b(Chapter|Section|Figure|Table|Exercise)\s+(\d+(?:\.\d+)?)\b"
+    r"\b(Chapter|Exercise)\s+(\d+)\b"
+    # This book's own figures, tables and sections are always numbered
+    # chapter.number ("Figure 2.1"), never a bare integer -- but "Source:
+    # Fehr and G\u00e4chter (2000b), p. 171, Figure 3" cites a *different*
+    # book's own figure 3 by that source's numbering, which happens to be
+    # bare. Requiring the decimal here is what tells the two apart; the
+    # alternative, matching bare integers too, resolved a source citation's
+    # figure number against this book's registry by coincidence whenever the
+    # two ever collided.
+    r"|\b(Section|Figure|Table)\s+(\d+\.\d+)\b"
     r"|\bEquation\s+\(?(\d+\.\d+)\)?"
 )
 RE_CITATION = re.compile(r"\[\s*\d{1,3}(?:\s*,\s*\d{1,3})*\s*\]")
@@ -104,20 +113,29 @@ def build_registry(triage: dict, emitted: list[int], assets: dict) -> Registry:
             registry.sections[section["number"]] = (path, anchor)
         for asset in assets.get(config.chapter_id(number), []):
             label = asset.get("label")
-            if label and not asset.get("issue"):
+            if not label or asset.get("issue"):
+                continue
+            if asset.get("label_kind") == "table":
+                registry.tables[label] = (path, "tbl-" + label.replace(".", "-"))
+            else:
                 registry.figures[label] = (path, "fig-" + label.replace(".", "-"))
 
-        # Payoff matrices are figures to the reader and to the prose, but they
+        # Payoff matrices are figures or tables to the reader and to the
+        # prose depending on which keyword their own caption used, but they
         # have no asset, so the asset list alone does not know they exist.
-        # Without this, "as shown in Figure 6.1" resolves to nothing for the 25
-        # matrices in chapter 6 and every one of those references is dropped.
+        # Without this, "as shown in Figure 6.1" (or "Table 7.7") resolves to
+        # nothing for a chapter's matrices and every one of those references
+        # is dropped.
         model_path = config.RECONCILE_DIR / f"{config.chapter_id(number)}.json"
         if model_path.exists():
             model = json.loads(model_path.read_text())
             for block in model.get("blocks", []):
                 label = block.get("label")
                 if block.get("type") == "matrix" and label:
-                    registry.figures[label] = (path, "fig-" + label.replace(".", "-"))
+                    if block.get("label_kind") == "table":
+                        registry.tables[label] = (path, "tbl-" + label.replace(".", "-"))
+                    else:
+                        registry.figures[label] = (path, "fig-" + label.replace(".", "-"))
                 elif block.get("type") == "equation" and label:
                     registry.equations[label] = (path, "eq-" + label.replace(".", "-"))
 
@@ -150,8 +168,10 @@ def link_references(text: str, registry: Registry, unresolved: list[dict], page:
 
     def replace_xref(match: re.Match[str]) -> str:
         whole = match.group(0)
-        if match.group(3) is not None:
-            kind, number = "Equation", match.group(3)
+        if match.group(5) is not None:
+            kind, number = "Equation", match.group(5)
+        elif match.group(3) is not None:
+            kind, number = match.group(3), match.group(4)
         else:
             kind, number = match.group(1), match.group(2)
         lookup = {
@@ -333,8 +353,11 @@ def emit_chapter(
 
         if kind == "figure":
             label = block.get("label")
+            label_kind = block.get("label_kind")
+            keyword = "Table" if label_kind == "table" else "Figure"
             asset = asset_by_block.get(block["id"])
-            anchor = "fig-" + label.replace(".", "-") if label else None
+            prefix = "tbl" if label_kind == "table" else "fig"
+            anchor = prefix + "-" + label.replace(".", "-") if label else None
             if anchor:
                 lines.append(f'<a id="{anchor}"></a>')
                 lines.append("")
@@ -344,6 +367,23 @@ def emit_chapter(
                 # only checks for the file on disk would notice.
                 alt = re.sub(r"[\[\]]", "", asset["alt"]).replace('"', "'")
                 lines.append(f"![{alt}](/{asset['file']})")
+                lines.append("")
+            # A cropped exhibit whose own text could not be parsed into a
+            # matrix or table grid (a multi-column data table -- percentages
+            # by country, say -- rather than a 2-player payoff pair) still
+            # carries the PDF's own reading of its cells in `interior_text`.
+            # Dropping that here would make the crop the only record of the
+            # data: legible to a sighted reader looking at the image, invisible
+            # to search, a screen reader, or the text/numeric fidelity gates,
+            # which is exactly the silent loss those gates exist to catch.
+            # It is rendered as plain prose rather than reconstructed as a
+            # table because the geometry that would let it be laid out in
+            # columns correctly was never recovered -- only that no number or
+            # word from it is lost is guaranteed here.
+            interior = " ".join(block.get("interior_text") or [])
+            if interior.strip():
+                rendered = link_references(interior, registry, unresolved, page)
+                lines.append(f'<span class="figure-data">{rendered}</span>')
                 lines.append("")
             for sub in sorted(
                 sub_captions.get(block["id"], []), key=lambda b: (b["bbox"][1], b["bbox"][0])
@@ -365,7 +405,7 @@ def emit_chapter(
                 rendered = apply_small_caps(rendered, block.get("small_caps") or [])
                 suffix = f" {rendered}" if rendered.strip() else ""
                 lines.append(
-                    f'<span class="figure-caption">**Figure {label}:**{suffix}</span>'
+                    f'<span class="figure-caption">**{keyword} {label}:**{suffix}</span>'
                 )
                 lines.append("")
             continue
@@ -384,12 +424,17 @@ def emit_chapter(
         if kind == "matrix":
             # A payoff matrix is emitted as a real table rather than a bitmap,
             # so its payoffs stay selectable, searchable and readable aloud.
-            # The book captions these "Figure N.N" and cross-references them as
-            # figures, so the anchor is a figure anchor: rewriting them as
-            # tables here would break every "see Figure 6.1" in the prose.
+            # The anchor and caption keyword follow whichever word the book's
+            # own caption used -- usually "Figure", but some books (e.g.
+            # Behavioral Game Theory) caption some matrices "Table" instead,
+            # and cross-reference them that way too, so hardcoding "Figure"
+            # would break every "see Table 7.7" in the prose.
             label = block.get("label")
+            label_kind = block.get("label_kind")
+            keyword = "Table" if label_kind == "table" else "Figure"
+            prefix = "tbl" if label_kind == "table" else "fig"
             if label:
-                lines.append(f'<a id="fig-{label.replace(".", "-")}"></a>')
+                lines.append(f'<a id="{prefix}-{label.replace(".", "-")}"></a>')
                 lines.append("")
             lines.extend(markdown_table(block.get("cells") or []))
             caption = block.get("caption")
@@ -402,7 +447,7 @@ def emit_chapter(
                 rendered = apply_small_caps(rendered, block.get("small_caps") or [])
                 suffix = f" {rendered}" if rendered.strip() else ""
                 lines.append(
-                    f'<span class="figure-caption">**Figure {label}:**{suffix}</span>'
+                    f'<span class="figure-caption">**{keyword} {label}:**{suffix}</span>'
                 )
                 lines.append("")
             continue

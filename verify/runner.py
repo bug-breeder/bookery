@@ -97,7 +97,7 @@ def verify_chapter(number: int, run_build: bool = False) -> ChapterReport:
         figure_regions=figure_regions or None,
         equation_regions=equation_regions or None,
     )
-    counts = reference.count_structures(doc, first, last)
+    counts = reference.count_structures(doc, first, last, chapter_number=number)
 
     emitted = _find_emitted(triage, meta)
     review: list[dict] = []
@@ -108,9 +108,11 @@ def verify_chapter(number: int, run_build: bool = False) -> ChapterReport:
         results.append(gates._blocked("text_coverage", "no emitted .md for this chapter"))
         results.append(gates._blocked("numeric_fidelity", "no emitted .md for this chapter"))
     else:
-        cand_text = candidate.markdown_to_text(emitted.read_text())
+        emitted_md = emitted.read_text()
+        cand_text = candidate.markdown_to_text(emitted_md)
+        cand_text_numeric = candidate.markdown_to_text(emitted_md, strip_figure_data=True)
         results.append(gates.gate_text_coverage(ref.body_text, cand_text))
-        results.append(gates.gate_numeric_fidelity(ref.body_text, cand_text))
+        results.append(gates.gate_numeric_fidelity(ref.body_text, cand_text_numeric))
 
     # ---- Gate 3 compares the canonical model against the PDF's own counts.
     if model is None:

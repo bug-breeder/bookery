@@ -22,11 +22,14 @@ face; two or more such cells sharing a baseline make a row, and two or more
 rows make a grid. Strategy names are the italic runs to the left of the cells
 and above them; the player names are the roman runs outside those.
 
-The book labels these exhibits "Figure", not "Table", and cross-references
-call them Figure 6.1. They keep the figure label and the `fig-` anchor and are
-counted as figures; only their *presentation* differs, as a real Markdown
-table rather than a bitmap, which keeps the payoffs selectable, searchable and
-legible to a screen reader.
+This chapter labels these exhibits "Figure", not "Table", and cross-references
+call them Figure 6.1. Not every book is this consistent, though -- Behavioral
+Game Theory numbers Figures and Tables as independent sequences and puts some
+payoff matrices under each ("Table 7.7" is one) -- so a matrix keeps whichever
+keyword its own caption used (`Block.label_kind`) rather than always being
+presented as a figure. Either way, only its *presentation* differs from an
+ordinary exhibit of that keyword: a real Markdown table rather than a bitmap,
+which keeps the payoffs selectable, searchable and legible to a screen reader.
 """
 
 from __future__ import annotations
@@ -75,7 +78,16 @@ RE_PAYOFF = re.compile(rf"^{CELL}(?:\s*,\s*{CELL}){{1,2}}$")
 # Computer Modern's math italic carries the payoff digits; text italic carries
 # the strategy names. Distinguishing them is what separates a cell from a
 # header without resorting to a word list.
-MATH_FONT_HINTS = ("CMMI", "CMSY", "CMEX")
+#
+# Not every book sets payoffs in a dedicated math face, though: Behavioral
+# Game Theory is typeset in NewBaskerville throughout, with no separate math
+# italic, so its payoff cells are plain NewBaskerville-Roman -- the same face
+# as ordinary body text. Font alone therefore cannot gate candidates for that
+# book; `is_payoff`'s shape (a whole line that is nothing but a comma-
+# separated cell) already does that job on its own, so NewBaskerville is
+# included here to make the font check a no-op for it rather than a filter
+# that rejects every one of its matrices.
+MATH_FONT_HINTS = ("CMMI", "CMSY", "CMEX", "NewBaskerville")
 ITALIC_FONT_HINTS = ("CMTI", "CMMI", "Italic", "Oblique")
 
 ROW_TOLERANCE = 4.0       # baseline jitter within one matrix row
@@ -100,6 +112,36 @@ def is_payoff(text: str) -> bool:
     if not RE_PAYOFF.match(text):
         return False
     return not any(RE_ZERO_PAD.match(part.strip()) for part in text.split(","))
+
+
+# A lone decimal, unlike a lone integer, is never a strategy label anywhere in
+# this book -- games number their strategies "1", "2", "3" or name them with
+# words, never "0.5". It is, however, exactly the shape of the per-game
+# "MSE probability 0.167 0.333 0.500 Actual frequency ..." summary line that
+# several chapters print between one game's grid and the next's: each
+# probability sits on its own short text run, aligned under the very same
+# column x-positions as the grid above it (that alignment is the whole point
+# of the summary line), which is indistinguishable from a real column header
+# by position or length alone. Chapter 3's Table 3.8 reads three such summary
+# lines as the *next* game's column headers this way, corrupting one game's
+# real MSE probabilities into missing numbers and smearing another game's
+# actual frequencies into a fabricated header row. Excluding bare decimals
+# specifically (not bare integers, which legitimate numeric strategy labels
+# still need) closes that gap without touching the integer-labelled games
+# this same header search already handles correctly.
+#
+# The optional wrapping parentheses are for the same summary line's other
+# common typesetting: Chapter 5's "Normal form (1M)"/"Sequential form (1S)"
+# tables print their own row and column mixing frequencies parenthesised --
+# "Frequency (0.20) (0.80)" -- rather than bare, which otherwise slips past
+# this exact check by one character and reproduces the identical corruption
+# one game's frequencies vanish, a neighbouring game's grid gets a
+# fabricated header row of them.
+RE_BARE_DECIMAL = re.compile(r"^\(?[-+\u2212\u2013]?(?:\d+\.\d+|\.\d+)\)?$")
+
+
+def _is_bare_decimal(text: str) -> bool:
+    return bool(RE_BARE_DECIMAL.match(text.strip()))
 
 
 def _is_math(line: Line) -> bool:
@@ -177,6 +219,28 @@ def _cluster_rows(cells: list[Line]) -> list[list[Line]]:
 
 
 def _column_centres(rows: list[list[Line]]) -> list[float]:
+    # When every row holds the same number of cells, that count already *is*
+    # the column count, and each row's cells are pre-sorted left to right
+    # (`_cluster_rows` sorts each row by `bbox[0]`) -- so position, not
+    # proximity, can identify which column a cell belongs to. That matters
+    # for a game with many strategies per player: Chapter 8's Table 8.3
+    # packs nine columns (three "messages", three actions apiece) into the
+    # same page width an ordinary two-column game uses for two, so adjacent
+    # real columns sit closer together than COLUMN_TOLERANCE. The proximity
+    # clustering below then merges several genuine columns into one bucket,
+    # and cells at the merged bucket's edge can end up farther from its
+    # (now shifted) centre than COLUMN_TOLERANCE allows at all -- silently
+    # failing `_nearest_column` and, with it, the whole matrix. Reading
+    # column identity off each row's fixed cell count instead sidesteps
+    # that failure mode entirely for every regular grid, not just this one.
+    lengths = {len(row) for row in rows if row}
+    if len(lengths) == 1:
+        n = lengths.pop()
+        return [sum(_centre(row[i]) for row in rows) / len(rows) for i in range(n)]
+
+    # Rows disagree on cell count -- a genuinely irregular grid (or noise
+    # picked up alongside it) -- so column identity has to fall back to
+    # proximity clustering instead of a fixed per-row index.
     centres: list[float] = []
     for line in sorted((l for row in rows for l in row), key=lambda l: l.bbox[0]):
         centre = _centre(line)
@@ -199,25 +263,30 @@ def _nearest_column(centre: float, centres: list[float]) -> int | None:
 
 
 def find_matrices(
-    lines: list[Line], page: int, caption_tops: tuple[float, ...] = ()
+    lines: list[Line],
+    page: int,
+    caption_tops: tuple[float, ...] = (),
+    caption_bottoms: tuple[float, ...] = (),
 ) -> list[Matrix]:
     """Recover every payoff matrix on a page from unmerged text lines.
 
     `lines` must be unmerged: `merge_rows` concatenates a matrix row into one
     string, which destroys the column positions this depends on.
 
-    `caption_tops` are the y positions of "Figure N.N:" captions on the page.
-    They are what makes a degenerate one-cell grid safe to accept: iterated
-    deletion of dominated strategies leaves games with a single surviving
-    outcome, and Figure 6.22 is exactly that, so requiring two rows would drop
-    it. A lone payoff is only believed when a caption sits directly beneath it.
+    `caption_tops` are the y positions of "Figure N.N:" captions on the page,
+    and `caption_bottoms` of "Table N.N:" captions. They are what makes a
+    degenerate one-cell grid safe to accept: iterated deletion of dominated
+    strategies leaves games with a single surviving outcome, and Figure 6.22
+    is exactly that, so requiring two rows would drop it. A lone payoff is
+    only believed when a caption sits directly beside it -- below for a
+    Figure, above for a Table, matching each keyword's own convention.
     """
     candidates = [l for l in lines if is_payoff(l.text) and _is_math(l)]
     if not candidates:
         return []
 
     matrices: list[Matrix] = []
-    for group, degenerate in _group_grids(candidates, caption_tops):
+    for group, degenerate in _group_grids(candidates, caption_tops, caption_bottoms):
         matrix = _build(group, lines, page, strict=degenerate)
         if matrix is not None:
             matrices.append(matrix)
@@ -225,7 +294,9 @@ def find_matrices(
 
 
 def _group_grids(
-    cells: list[Line], caption_tops: tuple[float, ...]
+    cells: list[Line],
+    caption_tops: tuple[float, ...],
+    caption_bottoms: tuple[float, ...] = (),
 ) -> list[tuple[list[Line], bool]]:
     """Split a page's payoff cells into separate grids.
 
@@ -253,7 +324,10 @@ def _group_grids(
             out.append((flat, False))
             continue
         bottom = max(l.bbox[3] for l in flat)
-        if any(0 <= top - bottom <= CAPTION_GAP for top in caption_tops):
+        top = min(l.bbox[1] for l in flat)
+        below_caption = any(0 <= cap_top - bottom <= CAPTION_GAP for cap_top in caption_tops)
+        above_caption = any(0 <= top - cap_bottom <= CAPTION_GAP for cap_bottom in caption_bottoms)
+        if below_caption or above_caption:
             out.append((flat, True))
     return out
 
@@ -290,6 +364,7 @@ def _build(
             lambda l, row=row: (
                 _is_header_like(l)
                 and not is_payoff(l.text)
+                and not _is_bare_decimal(l.text)
                 and abs(l.bbox[1] - row[0].bbox[1]) <= ROW_TOLERANCE
                 and l.bbox[2] <= row[0].bbox[0] + 2.0
             ),
@@ -307,6 +382,7 @@ def _build(
             l
             for l in lines
             if not is_payoff(l.text)
+            and not _is_bare_decimal(l.text)
             and _is_header_like(l)
             and 0 <= top - l.bbox[3] <= HEADER_GAP
         ),

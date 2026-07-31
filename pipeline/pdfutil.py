@@ -120,7 +120,20 @@ def iter_lines(page: fitz.Page) -> Iterator[Line]:
 
     Uses "rawdict" rather than "dict" because the per-character positions are
     the only place a space encoded purely as positioning can be recovered from.
+
+    "rawdict" reports every bbox in the page's raw, pre-`/Rotate` content
+    space, not the displayed space `page.rect` (and every consumer of a
+    `Line.bbox`) assumes -- a whole-page landscape chart embedded sideways
+    and rotated back with `/Rotate 90` for display comes back with its
+    "horizontal" caption reporting `dir == (0, -1)` and a bbox that is nine
+    points wide and forty tall, the transpose of how it actually reads.
+    `page.rotation_matrix` is the same matrix `get_pixmap` applies to render
+    the page the way it is meant to be read, so applying it here once means
+    every position-based heuristic downstream -- row merging, caption
+    binding, furniture detection, matrix geometry -- can keep assuming
+    bboxes are already in display space.
     """
+    rotation_matrix = page.rotation_matrix if page.rotation else None
     for block in page.get_text("rawdict")["blocks"]:
         if block.get("type") != 0:
             continue
@@ -138,10 +151,13 @@ def iter_lines(page: fitz.Page) -> Iterator[Line]:
                 for word in _span_text(span).split()
                 if word.strip(".,;:()[]")
             )
+            bbox = tuple(line["bbox"])
+            if rotation_matrix is not None:
+                bbox = tuple(fitz.Rect(*bbox) * rotation_matrix)
             yield Line(
                 text=text,
                 size=max(s["size"] for s in spans),
-                bbox=tuple(line["bbox"]),
+                bbox=bbox,
                 fonts=tuple(sorted({s["font"] for s in spans})),
                 small_caps=small_caps,
             )
