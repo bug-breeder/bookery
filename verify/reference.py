@@ -449,12 +449,18 @@ def count_structures(
             # at the foot of the page. Both conditions are needed: the karate
             # club figure's node labels are far smaller and sit high on the
             # page, and matching on size alone counted 16 of them as footnotes.
+            # The number must be followed by a word (or an opening quote), not
+            # just whitespace: Figure 6.5's period/strategy axis-tick labels
+            # sit at the foot of the page beside their chart and merge into
+            # "10 15"/"7 11"-shaped rows that a bare "digit, space" pattern
+            # cannot tell from a real footnote's own opening line.
             rel_top = line.y0 / doc[page_no - 1].rect.height
             if (
                 body_size - 3.5 <= line.size < body_size - 1.0
                 and rel_top > 0.70
-                and re.match(r"^\d{1,2}\s", text)
+                and re.match(r"^\d{1,2}\s+[A-Za-z\"'\u2018\u2019\u201c\u201d]", text)
                 and not textnorm.is_integer_soup(text)
+                and not textnorm.is_letter_soup(text)
             ):
                 footnotes += 1
 

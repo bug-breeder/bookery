@@ -283,3 +283,21 @@ def is_integer_soup(s: str, min_run: int = 6, ratio: float = 0.8) -> bool:
     if bare and Counter(bare).most_common(1)[0][1] / len(bare) > 0.5:
         return False
     return True
+
+
+def is_letter_soup(s: str, min_letters: int = 10, max_distinct: int = 3) -> bool:
+    """True when a text run is a repeated-letter sequence rather than prose.
+
+    Behavioral Game Theory's Appendix 5 prints raw experimental choices as
+    strings like "abbbbbb" and "aAAbbbb" (a run's letter records one of two
+    actions per period): a table of these, set at footnote size at the foot
+    of the page, otherwise reads exactly like a footnote's opening line --
+    small font, bottom of the page, starts with a bare number ("12
+    aaabbbb aaabbb"). Genuine footnote prose always draws on a normal
+    alphabet's worth of distinct letters; a run built from two or three
+    repeated symbols is a sequence being tabulated, not a sentence.
+    """
+    letters = re.sub(r"[^a-zA-Z]", "", s)
+    if len(letters) < min_letters:
+        return False
+    return len(set(letters.lower())) <= max_distinct

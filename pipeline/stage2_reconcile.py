@@ -52,10 +52,16 @@ RE_FIGURE_CAPTION = re.compile(r"^(Figure|Table)\s+(\d+\.\d+)\s*[.:]\s*(.*)$", r
 RE_SUBCAPTION = re.compile(r"^\(([a-z])\)\s+(.*)$")
 RE_SECTION_HEADING = re.compile(r"^(\d+\.\d+)\s+(\S.*)$")
 RE_EXERCISE_START = re.compile(r"^(\d{1,2})\.\s+\S")
-# A footnote body's own opening line: a bare number, matching
-# `verify/reference.py`'s independent ground-truth count so the structural
-# gate compares like for like.
-RE_FOOTNOTE_START = re.compile(r"^\d{1,2}\s")
+# A footnote body's own opening line: a bare number followed by a word (or an
+# opening quotation mark), matching `verify/reference.py`'s independent
+# ground-truth count so the structural gate compares like for like. The word
+# is required, not just the number, because a chart's axis-tick labels are
+# small, sit at the foot of the page beside their figure, and merge into the
+# same "bare number, space" shape when adjacent ticks are read as one row:
+# Figure 6.5's period/strategy axes merge into "10 15" and "7 11", which a
+# real footnote's opening line never looks like -- its next token is always
+# a word, since it is prose, not another axis value.
+RE_FOOTNOTE_START = re.compile(r"^\d{1,2}\s+[A-Za-z\"'\u2018\u2019\u201c\u201d]")
 
 # Cross-references that must resolve to a live anchor. Equation references
 # are the one kind printed with the number in parentheses ("Equation
@@ -657,6 +663,7 @@ def reconcile_chapter(chapter: int, pdf: Path) -> ChapterDoc:
                 and rel_top > 0.70
                 and RE_FOOTNOTE_START.match(row.text)
                 and not textnorm.is_integer_soup(row.text)
+                and not textnorm.is_letter_soup(row.text)
             )
             if footnote_start:
                 flush()

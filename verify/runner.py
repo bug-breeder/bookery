@@ -251,19 +251,65 @@ def verify_chapter(number: int, run_build: bool = False) -> ChapterReport:
 def _pdf_payoff_cells(doc: fitz.Document, first: int, last: int) -> list[str]:
     """Every payoff-shaped line the PDF prints in the chapter's math face.
 
-    Read directly from the text layer with no grid logic, so it is an
-    independent account of what the tables should contain.
+    Read directly from the text layer with almost no grid logic -- this is
+    meant as an independent account of what the tables should contain, so it
+    deliberately does not lean on `_build`'s row/column assignment (the part
+    that has actually had bugs). It does reuse `_group_grids`, the candidate
+    *clustering* `_build` sits on top of, to split a page into separate
+    exhibits by vertical gap and to apply the same one-cell-needs-a-caption
+    rule `find_matrices` does -- without that split, an exercise page with
+    several small unrelated games (Networks, Crowds, and Markets ch. 6) gets
+    all of its cells pooled into one page-wide blob, which is indistinguishable
+    from a single degenerate column of coincidences.
+
+    Within each exhibit it additionally requires at least two columns
+    (derived the same column-safe way `_column_centres` is, not a lone
+    x-tolerance check, which is exactly the bug that made a dense matrix's
+    own genuinely-adjacent columns collapse into one). A real payoff matrix
+    always has two columns by construction, unless it is a genuinely
+    one-column matrix (a single row-strategy against a single
+    column-strategy) -- which is precisely the caption-adjacent one-cell case
+    `_group_grids` already carves out, so it is exempted from the column
+    count here too. An ordinary statistics table's numbers sometimes have
+    neither a sibling column nor a caption of their own: Chapter 4's Table
+    4.3 prints thousands-grouped dollar amounts ("3,787") in an isolated
+    "Mean" column, and Chapter 7's Table 7.29 prints a pair of per-period
+    minimums ("1,2", "1,4") in an isolated "Period 5 MINs" column, both
+    alongside several *other* columns that are plainly not payoff-shaped
+    (percentages, bare counts, prose) -- one payoff-shaped column, on its
+    own, is what set them apart from a real grid.
     """
     from pipeline import matrix as matrixlib, pdfutil
+    from pipeline.stage2_reconcile import RE_FIGURE_CAPTION
 
     cells: list[str] = []
     for page_no in range(first, last + 1):
-        for line in pdfutil.page_lines(doc, page_no, rows=False):
-            text = line.text.strip()
-            if matrixlib.is_payoff(text) and any(
-                hint in font for font in line.fonts for hint in matrixlib.MATH_FONT_HINTS
-            ):
-                cells.append(text)
+        lines = pdfutil.page_lines(doc, page_no, rows=False)
+        page_candidates = [
+            line
+            for line in lines
+            if matrixlib.is_payoff(line.text.strip())
+            and any(hint in font for font in line.fonts for hint in matrixlib.MATH_FONT_HINTS)
+        ]
+        if not page_candidates:
+            continue
+        merged_rows = pdfutil.merge_rows(lines)
+        caption_tops = tuple(
+            r.bbox[1] for r in merged_rows if RE_FIGURE_CAPTION.match(r.text)
+        )
+        caption_bottoms = tuple(
+            r.bbox[3]
+            for r in merged_rows
+            if (m := RE_FIGURE_CAPTION.match(r.text)) and m.group(1).lower() == "table"
+        )
+        for group, degenerate in matrixlib._group_grids(
+            page_candidates, caption_tops, caption_bottoms
+        ):
+            if not degenerate:
+                rows = matrixlib._cluster_rows(group)
+                if len(matrixlib._column_centres(rows)) < 2:
+                    continue
+            cells.extend(line.text.strip() for line in group)
     return cells
 
 
