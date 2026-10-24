@@ -33,3 +33,6 @@ models/
 
 # OS
 .DS_Store
+
+# Lessons hold quoted book text; they live with the book data, not here.
+lessons/

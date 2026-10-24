@@ -80,6 +80,12 @@ def cmd_acquire(args: argparse.Namespace) -> None:
     _run(_python("pipeline.stage0_acquire", *_pdf_flag(args.pdf)))
 
 
+def cmd_ingest(args: argparse.Namespace) -> None:
+    argv = ["--epub", str(args.epub)]
+    argv += [f"--{flag}" for flag in ("list", "renumber", "force") if getattr(args, flag)]
+    _run(_python("pipeline.epub_ingest", *argv))
+
+
 def cmd_extract(args: argparse.Namespace) -> None:
     argv = ["--all"] if args.all else _chapter_flags(_resolve_chapters(args))
     argv += _pdf_flag(args.pdf)
@@ -125,6 +131,31 @@ def cmd_status(_args: argparse.Namespace) -> None:
 
 def cmd_readme(args: argparse.Namespace) -> None:
     readme_mod.write(force=args.force)
+
+
+# --------------------------------------------------------------------------
+# `bookery learn` -- condensed, interactive lessons published as Artifacts.
+# --------------------------------------------------------------------------
+
+
+def cmd_learn(args: argparse.Namespace) -> None:
+    if args.learn_command == "pack":
+        _run(_python("learn.pack", *_chapter_flags(_resolve_chapters(args))))
+    elif args.learn_command == "build":
+        _run(_python("learn.build", *_chapter_flags(_resolve_chapters(args))))
+    elif args.learn_command == "verify":
+        argv = _chapter_flags(_resolve_chapters(args))
+        if args.no_browser:
+            argv.append("--no-browser")
+        _run(_python("learn.runner", "verify", *argv))
+    elif args.learn_command == "shot":
+        argv = ["--chapter", str(args.chapter)]
+        if args.slide:
+            argv += ["--slide", args.slide]
+        argv += [f"--{flag}" for flag in ("present", "dark", "phone") if getattr(args, flag)]
+        _run(_python("learn.runner", "shot", *argv))
+    elif args.learn_command == "record":
+        _run(_python("learn.runner", "record", "--chapter", str(args.chapter), "--url", args.url))
 
 
 # --------------------------------------------------------------------------
@@ -218,13 +249,20 @@ def cmd_build(args: argparse.Namespace) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
-        prog="bookery", description="PDF -> fidelity-checked Docusaurus site"
+        prog="bookery", description="PDF -> fidelity-checked Docusaurus site, and interactive lessons"
     )
     sub = ap.add_subparsers(dest="command", required=True)
 
     p = sub.add_parser("acquire", help="stage 0: triage the PDF's structure")
     _add_pdf_arg(p)
     p.set_defaults(func=cmd_acquire)
+
+    p = sub.add_parser("ingest", help="read an EPUB straight into the canonical model (for `learn`)")
+    p.add_argument("--epub", type=Path, required=True, help="the .epub file")
+    p.add_argument("--list", action="store_true", help="print the chapter map and write nothing")
+    p.add_argument("--renumber", action="store_true", help="number kept TOC entries 1..N")
+    p.add_argument("--force", action="store_true", help="overwrite a PDF book's triage.json")
+    p.set_defaults(func=cmd_ingest)
 
     p = sub.add_parser("extract", help="stage 1: dual extraction (marker + docling)")
     _add_chapter_selector(p)
@@ -270,6 +308,26 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--reinstall", action="store_true", help="reinstall JS deps even if present")
     p.add_argument("--port", type=int, help="pass a specific port through to Docusaurus")
     p.set_defaults(func=cmd_view)
+
+    p = sub.add_parser("learn", help="interactive lessons: pack, build, verify, shot, record")
+    lsub = p.add_subparsers(dest="learn_command", required=True)
+    lp = lsub.add_parser("pack", help="write the source pack Claude authors a lesson from")
+    _add_chapter_selector(lp)
+    lp = lsub.add_parser("build", help="build lessons/chNN/lesson.json into one HTML page")
+    _add_chapter_selector(lp)
+    lp = lsub.add_parser("verify", help="lesson gates + build + headless-browser self-test")
+    _add_chapter_selector(lp)
+    lp.add_argument("--no-browser", action="store_true", help="skip the runtime gate (BLOCKED)")
+    lp = lsub.add_parser("shot", help="screenshot the built lesson")
+    lp.add_argument("--chapter", type=int, required=True)
+    lp.add_argument("--slide", help="slide id to open at")
+    lp.add_argument("--present", action="store_true", help="present mode instead of study")
+    lp.add_argument("--dark", action="store_true")
+    lp.add_argument("--phone", action="store_true")
+    lp = lsub.add_parser("record", help="remember the Artifact URL a lesson was published to")
+    lp.add_argument("--chapter", type=int, required=True)
+    lp.add_argument("--url", required=True)
+    p.set_defaults(func=cmd_learn)
 
     p = sub.add_parser(
         "build",

@@ -16,6 +16,8 @@ without re-running everything upstream:
 | 3 | `pipeline/stage3_assets.py` | figure crops + `work/assets.json` |
 | 4 | `pipeline/stage4_emit.py` | `site/docs/**`, `sidebars.ts` |
 | — | `verify/runner.py` | `reports/chNN.json`, `reports/review-queue.md` |
+| 0-3 (EPUB) | `pipeline/epub_ingest.py` | `work/triage.json`, `work/reconcile/chNN.json`, `work/assets.json` |
+| lesson | `learn/` | `lessons/chNN/lesson.json` → `work/learn/chNN/index.html`, `reports/learn-chNN.json` |
 
 Eight gates, all of which must pass for a chapter to be green: text
 coverage, numeric fidelity, structural counts, assets, math, cross-references,
@@ -60,6 +62,150 @@ fixtures.
   and   cross-reference registry from the full emitted set each time. `bookery
   emit --all` handles this for you; calling the raw stage module for a
   single chapter will silently drop every other chapter from the nav.
+
+## EPUB ingest
+
+An EPUB is already structured text, so it skips extraction and
+reconciliation: `pipeline/epub_ingest.py` writes the canonical model
+directly, with `source.format = "epub"` in `triage.json` and
+`source: "epub"` on every block. Anything that reads `work/reconcile` reads
+both kinds of book the same way.
+
+**The chapter map is the hard part**, because a TOC says nothing reliable
+about which entries are chapters. In order:
+
+- Front and back matter is skipped by label (contents, index, notes,
+  acknowledgements, "Also by", Vietnamese "mục lục", per-page entries…).
+- A part is an *unnumbered* entry whose children are mostly numbered and
+  span at least two spine documents; ingest descends into it. A chapter
+  whose sections are numbered ("1.1", "1.2" in the same file) has numbered
+  children too, so "spans two documents" is what tells the two apart.
+- A chapter number is accepted only as part of an increasing sequence with
+  small steps, so a title that merely starts with a number ("20 Percent
+  Time") isn't chapter 20. A restart (an omnibus's second "Chapter 1")
+  ends the sequence and is reported as a note.
+- When fewer than two numbers, or under 30% of kept entries, are accepted,
+  the book is numbered sequentially instead. `--renumber` forces that.
+- The last opener (Preface, Introduction…) before chapter 1 becomes chapter
+  0, matching the PDF path. Unnumbered entries between chapters fold into the
+  previous chapter; trailing ones (Conclusion, Epilogue) continue the
+  sequence.
+
+A chapter runs from its entry's (document, anchor) to the next *boundary*,
+and skipped entries are boundaries too, so back matter never leaks into the
+last chapter. Converters (calibre especially) often split files and drop
+the anchors the TOC points at: ingest then looks for the id in the other
+spine documents, then for a heading with the entry's text, and drops a
+chapter that would start where an earlier one starts (with a note) rather
+than emit the same blocks twice.
+
+**Parse as XML first.** The HTML parser reads a self-closing `<span/>` as
+an open tag, so one empty page marker swallows the rest of the page into
+itself. Documents are parsed strictly (HTML named entities rewritten to
+numeric references, entity resolution and network access off) and fall
+back to the HTML parser only when that fails.
+
+**Walking blocks.** Elements are walked in reading order. A container that
+mixes text with block children yields the inline runs between them as
+paragraphs, so text after the first inline child isn't lost. Text collection
+pads a space at every block boundary, so adjacent cells or spans ("4.1" and
+"Perfect") don't fuse. Headings come from tags and from the publisher class
+names that stand in for them (`CT`, `H1`, `chapterHeadA`…). Captions come
+from classes and from a "Figure 3.2" / "Table 2.1" label, and are bound to
+the nearest image. MathML becomes TeX through `alttext` or a TeX
+annotation, and an inline image whose alt text is TeX is kept as `$…$`. An
+equation that exists only as an image is flagged rather than given a fake
+`latex`. When a chapter's text lacks headings for its TOC sub-entries, they
+are inserted, so lessons still see its sections.
+
+**One file per TOC entry.** Exports like Vellum's give every section its
+own file, each starting again at `<h1>`. A heading the TOC names takes the
+TOC's depth; the headings after it, in the same file, nest under it,
+keeping their steps relative to its own tag level. Without this every
+section's subheads would land at the top level and a chapter would show
+dozens of "sections".
+
+**Noise the text doesn't need.** Note references (`epub:type="noteref"`,
+`doc-noteref`, a `<sup>` holding just an in-book link like "1" or "†") are
+dropped, so "lines" doesn't become "lines1"; superscripts that aren't
+links (r<sup>2</sup>) stay. An image the book uses three or more times
+(a quote mark, a chapter ornament) isn't a figure unless it has a caption,
+and neither is an uncaptioned image that is only a thin horizontal stroke
+(a section-break flourish).
+
+**Pages.** `epub:type="pagebreak"` markers set each block's `page`. The
+triage entry's `printed_page` equals its `pdf_page`, so the page offset is 0
+and every page-aware reader works unchanged. A book without markers has
+`page: null` blocks and no page numbers anywhere downstream. Nothing
+invents them.
+
+## Lessons
+
+`learn/` turns one chapter into a condensed, interactive page published as
+a Claude Artifact: pack → `lesson.json` (written by Claude, see
+`.claude/skills/learn/`) → gates → build → browser self-test → publish →
+`bookery learn record`.
+
+**Claude writes data, not a page.** A lesson is JSON (slides with one main
+part each: a figure, a widget, stats, a quote, columns) rendered by one
+shared runtime (`learn/runtime/app.js`, `app.css`). Every lesson gets the
+same tested present mode, study mode, themes, keyboard handling and
+self-test, and the authoring effort goes into the teaching rather than into
+CSS. Figures are the exception: the best picture for an idea is usually
+specific to it, so a lesson draws its figures as `custom` widgets in
+`lessons/chNN/widgets/NAME.js` (code written for that chapter), and uses the
+built-in chart/table widgets only where they really are the best fit. A
+custom widget marked `"static": true` is a figure (visual, not "your
+turn").
+
+**What a lesson may say comes only from the canonical model.**
+`learn/source.py` is the read-side view of it: the blocks (the only text a
+lesson may quote or take numbers from), the section map (numbered "3.1"
+headings, else the second-shallowest unnumbered heading level as `s1`,
+`s2`…), and the exhibits (`fig 3.1` / `tbl 3.1`, or a block id when
+unlabelled).
+
+**The gates check the inverse of the site's promise.** A site must lose
+nothing; a lesson loses most of the chapter on purpose and must *make up*
+nothing:
+
+- `numbers`: every numeric token in reader-visible text must occur in the
+  chapter, where a proportion matches its percent (0.45 ↔ 45). A quiz
+  distractor's text is exempt (it is there to be wrong), but its `why` is a
+  claim and is checked.
+- `quotes`: verbatim after normalisation; `...` splits a quote into
+  pieces, and each must be verbatim.
+- `coverage`: a section is taught when a slide cites one of its blocks or
+  shows one of its exhibits; otherwise it must be listed in `skipped` with
+  a reason, which the page shows the reader.
+- `density`: per-field word budgets per slide, plus lesson-wide minimums for
+  visual slides and the book's exhibits, and at least one recall check. It
+  deliberately sets no interaction quota: a quota is what filled early
+  lessons with checks that taught nothing.
+- Numbers a widget read off a book image (a screenshot of a spreadsheet)
+  can't be checked against the text; the widget names those images in
+  `transcribed`, `numbers` lists the values for review instead of failing
+  them, and the page shows the images beside the widget.
+- `runtime`: headless Chrome loads `preview.html#selftest`, which mounts
+  every slide in both modes, answers every recall check the way a reader
+  would, and reports script errors, overflow of the 1600×900 stage, broken
+  images, checks that give no feedback, and horizontal scroll at phone
+  width. With no browser installed the gate is BLOCKED, never PASS.
+
+Outside knowledge is allowed only in a slide's `beyond` field, rendered as
+"Beyond the book", so a reader can always tell the book's claims from
+Claude's.
+
+**The build fits the Artifact sandbox.** The page is one file: figures
+re-encoded as WebP data URIs (at most 1400px wide), the cited passages and
+the runtime inlined. The only network loads are Google Fonts and, when a
+lesson has math, KaTeX from cdnjs, the hosts the Artifact CSP allows.
+`index.html` has no document skeleton (the Artifact wraps it), and
+`preview.html` adds one for local viewing and the self-test.
+
+**Lessons live with the book's data**, never in this repository: they
+quote the book. `lessons/manifest.json` in the book root records each
+chapter's Artifact URL, so a rebuilt lesson is republished to the same link.
 
 ## Known extraction pitfalls
 
