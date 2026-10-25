@@ -461,6 +461,15 @@ def test_a_widgets_message_templates_read_as_counts():
     assert "{" not in text
 
 
+def test_a_widgets_option_codes_stay_out_of_its_transcript():
+    # A cold reader met "none | renewing | choosing" and couldn't tell what they labelled.
+    props = {"options": [{"code": "renewing", "label": "Retention"}, {"code": "choosing", "label": "Consideration"}]}
+    data = _widget_data({"type": "custom", "module": "sheet", "caption": "Try it.", "props": props})
+    text = transcript.render(data, {"w": "Try it"})
+    assert "Retention | Consideration" in text
+    assert "renewing" not in text and "choosing" not in text
+
+
 def test_the_transcript_steps_through_a_widget_and_shows_its_fields():
     # What the runtime read off the page: the start, then each step's new lines.
     data = _widget_data({"type": "custom", "module": "sheet", "caption": "Step through it.", "static": True})
