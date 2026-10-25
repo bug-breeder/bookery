@@ -266,6 +266,9 @@ def _strings(node, key: str = ""):
             yield "; ".join(f"{k}: {v.strip() if isinstance(v, str) else v}" for k, v in fields.items())
             return
         for k, v in node.items():
+            # An id or key names a part for the widget's code; the reader never sees it.
+            if k in ("id", "key") and isinstance(v, str):
+                continue
             yield from _strings(v, k)
     elif isinstance(node, list):
         if node and all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in node):
