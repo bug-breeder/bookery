@@ -317,6 +317,20 @@ def test_the_page_stands_alone_without_the_artifact_skeleton(src, tmp_path):
     assert "[hidden]" in head
 
 
+def test_centred_present_slides_spill_where_the_overflow_check_sees():
+    # Plain centring pushes half of a too-tall slide above the stage, out of
+    # scrollHeight's reach, and a statement's text then runs under its pinned
+    # kicker while the runtime gate still passes.
+    css = (build.RUNTIME / "app.css").read_text()
+    rules = {}
+    for kind in ("is-section", "is-statement"):
+        sel = f".bk-canvas .bk-slide.{kind} {{"
+        rules[kind] = css.split(sel, 1)[1].split("}", 1)[0]
+        assert "justify-content: safe center" in rules[kind]
+    top = int(css.split(".bk-slide.is-statement .bk-card-top {", 1)[1].split("top:", 1)[1].split("px", 1)[0])
+    assert int(rules["is-statement"].split("padding-top:", 1)[1].split("px", 1)[0]) > top + 40
+
+
 def test_payload_embeds_transcribed_images_as_keys(src):
     les = _sheet(["fig 3.1"])
     slides(les)[0].pop("figure")
