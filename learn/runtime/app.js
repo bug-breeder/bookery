@@ -1326,18 +1326,47 @@
   // that steps on "next" (api.onNext) is stepped through, and each step adds
   // the lines it newly put on the page, after a "[next]" line. A form field
   // shows its value, not its text, so it reads as "[value]", or "[ ]" empty.
+  // innerText runs a drawing's labels together ("write" + "and" on the next
+  // line reads "writeand"), so each drawing stands in as its lines of text.
   function customText() {
     var out = {};
+    function shown(el) { return getComputedStyle(el).visibility === "visible"; }
+    function svgLines(svg) {
+      var lines = [];
+      svg.querySelectorAll("text").forEach(function (t) {
+        if (!t.getClientRects().length || !shown(t)) return;
+        var line = "";
+        t.childNodes.forEach(function (n) {
+          if (n.nodeType === 3) { line += n.textContent; return; }
+          if (n.nodeName !== "tspan" || !shown(n)) return;
+          var moves = n.hasAttribute("x") || n.hasAttribute("y") || parseFloat(n.getAttribute("dy") || 0);
+          if (moves && line.trim()) { lines.push(line); line = ""; }
+          line += n.textContent;
+        });
+        if (line.trim()) lines.push(line);
+      });
+      return lines;
+    }
     function text(host) {
-      var marks = [];
+      var marks = [], drawings = [];
       host.querySelectorAll("input[type=text], input[type=number], input:not([type]), textarea, select").forEach(function (f) {
         if (!f.getClientRects().length) return;   // hidden: not on the page
         var m = h("span", { text: " [" + (f.value || " ") + "] " });
         f.after(m);
         marks.push(m);
       });
+      host.querySelectorAll("svg").forEach(function (svg) {
+        if (svg.parentElement.closest("svg") || !svg.getClientRects().length) return;
+        var m = h("div", { text: svgLines(svg).join("\n") });
+        m.style.whiteSpace = "pre-line";
+        svg.after(m);
+        marks.push(m);
+        drawings.push([svg, svg.style.display]);
+        svg.style.display = "none";
+      });
       var t = host.innerText.replace(/[ \t]+/g, " ").replace(/\s*\n\s*/g, "\n").trim();
       marks.forEach(function (m) { m.remove(); });
+      drawings.forEach(function (d) { d[0].style.display = d[1]; });
       return t;
     }
     flat.forEach(function (s) {
