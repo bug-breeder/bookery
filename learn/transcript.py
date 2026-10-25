@@ -195,9 +195,11 @@ def _widget(w: dict, figures: dict, shown: str | None = None) -> list[str]:
             # record with a new field keeps its first field, so the reader can
             # tell which item ("give: 4") the new field belongs to, and drops
             # the rest of what is already on the page (settings like "max: 5").
+            # A lone lowercase word ("renewing") or a hyphenated one is a code
+            # the widget's buttons stand for, not text it shows.
             later = []
             for x in words:
-                if _seen(x, shown) or re.fullmatch(r"[\w]+(?:-[\w]+)+", x):
+                if _seen(x, shown) or re.fullmatch(r"[a-z]+|[\w]+(?:-[\w]+)+", x):
                     continue
                 if _record(x):
                     first, *rest = x.split("; ")
