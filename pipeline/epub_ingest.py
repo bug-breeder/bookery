@@ -1103,6 +1103,25 @@ def _position(epub: Epub, entry: TocEntry, doc) -> tuple[int, int]:
     return (si, doc(epub.spine[si]).index_of(entry.frag))
 
 
+def _trailing_matter(epub: Epub, after: tuple[int, int], doc) -> tuple[int, str] | None:
+    """The first spine document past the last TOC entry that names itself back
+    matter (its <title> or first heading reads "About the Author") though the
+    TOC leaves it out; without a boundary there the last chapter runs on
+    through it."""
+    for si in range(after[0] + 1, len(epub.spine)):
+        try:
+            d = doc(epub.spine[si])
+        except KeyError:
+            continue
+        title = next((e for e in d.root.iter() if isinstance(e.tag, str) and _local(e.tag) == "title"), None)
+        head = next((e for e in d.body.iter() if isinstance(e.tag, str) and _local(e.tag) in HEADINGS), None)
+        for el in (title, head):
+            label = " ".join(text_of(el).split()) if el is not None else ""
+            if label and RE_SKIP.match(label):
+                return si, label
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Writing
 # ---------------------------------------------------------------------------
@@ -1119,6 +1138,10 @@ def ingest(epub_path: Path, renumber: bool = False, force: bool = False, list_on
         return docs[name]
 
     boundaries = sorted({p for p in (_position(epub, e, doc) for e in boundary_entries) if p[0] >= 0})
+    trailing = _trailing_matter(epub, boundaries[-1], doc) if boundaries else None
+    if trailing:
+        boundaries.append((trailing[0], 0))
+        skipped.append({"label": trailing[1], "reason": "back matter the table of contents leaves out"})
 
     print(f"{epub.title or epub_path.name} — {epub.author or 'unknown author'} "
           f"(EPUB {epub.version}, TOC from {epub.toc_kind}, {len(epub.spine)} spine documents)")

@@ -429,3 +429,19 @@ def test_an_image_the_book_repeats_everywhere_is_not_a_figure(tmp_path):
     assert [f.get("alt") for f in figs] == [None, "The ranked list"]
     assert figs[0]["asset"].endswith(".png")
     assert "Dwell, don't sell." in " ".join(b.get("text", "") for b in model["blocks"])
+
+
+def test_back_matter_the_toc_leaves_out_does_not_join_the_last_chapter(tmp_path):
+    docs = {**TINY_DOCS, "notes": f"<h1>Conclusion</h1><p>{FILLER}</p>",
+            "author": "<h1>ABOUT THE AUTHOR</h1><p>She has written many books about stopping.</p>",
+            "ads": "<h2>Work with the author</h2><p>Book a two-day workshop.</p>"}
+    entries = TINY_TOC[:-1] + [("Conclusion", "notes", [])]
+    epub = _write_epub(tmp_path / "trail.epub", docs=docs, entries=entries)
+    root = tmp_path / "book"
+    proc = _ingest(root, epub)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "skip  ABOUT THE AUTHOR" in proc.stdout
+    model = json.loads((root / "work" / "reconcile" / "ch03.json").read_text())
+    text = " ".join(b.get("text", "") for b in model["blocks"])
+    assert "Conclusion" in text and "running prose" in text
+    assert "ABOUT THE AUTHOR" not in text and "workshop" not in text
