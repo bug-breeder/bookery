@@ -202,7 +202,7 @@ def _widget(w: dict, figures: dict, shown: str | None = None) -> list[str]:
                 if _record(x):
                     first, *rest = x.split("; ")
                     x = "; ".join([first] + [p for p in rest if not _seen(p, shown)])
-                later.append(x)
+                later.append(_counted(x))
             if later and not w.get("static"):
                 out.append("  after the reader acts, it can also show (from the widget's data): " + " | ".join(later[:80]))
         elif words:
@@ -238,6 +238,13 @@ def _seen(s: str, shown: str) -> bool:
         return all(re.search(rf"(?<![\d.]){re.escape(v.strip())}(?![\d])", shown) for v in m.group(1).split(","))
     m = re.fullmatch(r"\w+: (.+)", s)
     return re.sub(r"[*_`]", "", m.group(1) if m else s) in shown
+
+
+def _counted(s: str) -> str:
+    """A widget's message template as the reader would picture it: the widget
+    fills "{n} of {of}" with numbers, so it reads "N of M", not as code."""
+    letters = dict(zip(dict.fromkeys(re.findall(r"\{(\w+)\}", s)), "NMK"))
+    return re.sub(r"\{(\w+)\}", lambda m: letters.get(m.group(1), "N"), s)
 
 
 def _record(s: str) -> bool:

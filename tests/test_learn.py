@@ -452,6 +452,15 @@ def test_a_widgets_ids_stay_out_of_its_transcript():
         assert "alts" not in text and "diff " not in text
 
 
+def test_a_widgets_message_templates_read_as_counts():
+    # A cold reader met "{n} themes." as if the page printed the braces.
+    props = {"many": "**{n} themes.** Merge some.", "score": "You matched {n} of {of}"}
+    data = _widget_data({"type": "custom", "module": "sheet", "caption": "Try it.", "props": props})
+    text = transcript.render(data, {"w": "Try it"})
+    assert "**N themes.** Merge some. | You matched N of M" in text
+    assert "{" not in text
+
+
 def test_the_transcript_steps_through_a_widget_and_shows_its_fields():
     # What the runtime read off the page: the start, then each step's new lines.
     data = _widget_data({"type": "custom", "module": "sheet", "caption": "Step through it.", "static": True})
