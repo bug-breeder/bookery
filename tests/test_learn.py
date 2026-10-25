@@ -331,6 +331,24 @@ def test_centred_present_slides_spill_where_the_overflow_check_sees():
     assert int(rules["is-statement"].split("padding-top:", 1)[1].split("px", 1)[0]) > top + 40
 
 
+def test_a_shot_rebuilds_the_page_it_shoots(book, monkeypatch):
+    # A preview from before the last edit would show a page that no longer exists.
+    from learn import runner
+
+    monkeypatch.setattr(runner.config, "ROOT", book)
+    monkeypatch.setattr(runner, "find_chrome", lambda: "chrome")
+    shot_urls = []
+    monkeypatch.setattr(runner, "_chrome", lambda chrome, url, size, extra: shot_urls.append(url))
+    (book / "lessons" / "ch03").mkdir(parents=True)
+    (book / "lessons" / "ch03" / "lesson.json").write_text(json.dumps(lesson(title="Fairness, edited")))
+    stale = book / "work" / "learn" / "ch03" / "preview.html"
+    stale.parent.mkdir(parents=True)
+    stale.write_text("<p>Fairness</p>")
+    runner.shot(3, None, present=True, dark=False, phone=False, out=book / "s.png")
+    assert "Fairness, edited" in stale.read_text()
+    assert shot_urls == [stale.as_uri() + "#present"]
+
+
 def test_payload_embeds_transcribed_images_as_keys(src):
     les = _sheet(["fig 3.1"])
     slides(les)[0].pop("figure")
