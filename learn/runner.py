@@ -277,9 +277,9 @@ def shot(number: int, slide: str | None, present: bool, dark: bool, phone: bool,
     chrome = find_chrome()
     if chrome is None:
         raise SystemExit("no Chrome/Chromium found (set BOOKERY_CHROME)")
-    preview = build_dir(number) / "preview.html"
-    if not preview.exists():
-        build_mod.build(number)
+    # Always rebuild: a preview left over from before the last edit to
+    # lesson.json or a widget would show the reader a page that no longer exists.
+    preview = build_mod.build(number).preview
     if present:
         # One slide is shot after all its builds, so its figure notes show.
         anchor = f"#present-{slide}~built" if slide else "#present"
