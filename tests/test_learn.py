@@ -342,9 +342,13 @@ def test_a_shot_rebuilds_the_page_it_shoots(book, monkeypatch):
     stale = book / "work" / "learn" / "ch03" / "preview.html"
     stale.parent.mkdir(parents=True)
     stale.write_text("<p>Fairness</p>")
+    # verify's transcript holds what the widgets drew, which a plain build can't know.
+    script = stale.parent / "transcript.md"
+    script.write_text("  it shows:\n    what the page drew\n")
     runner.shot(3, None, present=True, dark=False, phone=False, out=book / "s.png")
     assert "Fairness, edited" in stale.read_text()
     assert shot_urls == [stale.as_uri() + "#present"]
+    assert script.read_text() == "  it shows:\n    what the page drew\n"
 
 
 def test_payload_embeds_transcribed_images_as_keys(src):

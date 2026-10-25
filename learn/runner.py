@@ -279,7 +279,9 @@ def shot(number: int, slide: str | None, present: bool, dark: bool, phone: bool,
         raise SystemExit("no Chrome/Chromium found (set BOOKERY_CHROME)")
     # Always rebuild: a preview left over from before the last edit to
     # lesson.json or a widget would show the reader a page that no longer exists.
-    preview = build_mod.build(number).preview
+    # Leave the transcript alone: verify's copy holds what the widgets drew,
+    # and a plain build would swap it for a guess from their props.
+    preview = build_mod.build(number, write_transcript=False).preview
     if present:
         # One slide is shot after all its builds, so its figure notes show.
         anchor = f"#present-{slide}~built" if slide else "#present"

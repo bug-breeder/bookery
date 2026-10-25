@@ -266,7 +266,7 @@ if (/~built$/.test(location.hash)) window.BOOKERY_BUILT = 1;</script>
 """
 
 
-def build(number: int, root: Path | None = None) -> Built:
+def build(number: int, root: Path | None = None, write_transcript: bool = True) -> Built:
     src = ChapterSource(number, root)
     lesson, lesson_path = load_lesson(number, root)
     widgets_dir = lesson_path.parent / "widgets"
@@ -280,7 +280,8 @@ def build(number: int, root: Path | None = None) -> Built:
     preview = out / "preview.html"
     preview.write_text(PREVIEW_HEAD + page + "</body>\n</html>\n")
     script = out / "transcript.md"
-    script.write_text(transcript.render(data))
+    if write_transcript:
+        script.write_text(transcript.render(data))
 
     title = lesson.get("title") or src.title
     about = _plain(lesson.get("subtitle") or src.title).rstrip(".")
