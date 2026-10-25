@@ -442,6 +442,16 @@ def _widget_data(widget: dict, text: str = "") -> dict:
     return {"lesson": les, "chapter": {"number": 3, "title": "Fairness"}, "book": {}, "figures": {}}
 
 
+def test_a_widgets_ids_stay_out_of_its_transcript():
+    # A cold reader took "alts | diff" for words on the page.
+    rows = [{"key": "alts", "label": "Competitive alternatives"}, {"id": "diff", "label": "Differentiators"}]
+    data = _widget_data({"type": "custom", "module": "checkup", "caption": "Check it.", "props": {"rows": rows}})
+    for shown in (None, "Check it"):
+        text = transcript.render(data, {"w": shown} if shown else None)
+        assert "Competitive alternatives | Differentiators" in text
+        assert "alts" not in text and "diff " not in text
+
+
 def test_the_transcript_steps_through_a_widget_and_shows_its_fields():
     # What the runtime read off the page: the start, then each step's new lines.
     data = _widget_data({"type": "custom", "module": "sheet", "caption": "Step through it.", "static": True})
