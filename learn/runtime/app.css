@@ -642,11 +642,15 @@ input[type="range"]:disabled { opacity: 0.6; }
 .bk-canvas .bk-slide.is-title .bk-text { position: relative; color: var(--ink-2); font-size: 34px; max-width: 38ch; }
 .bk-hero-numeral { display: none; }
 .bk-canvas .bk-hero-numeral { display: block; }
-.bk-canvas .bk-slide.is-section { justify-content: center; gap: 26px; }
+/* "safe" centring: a slide too tall for the stage spills downwards, where
+   the self-test's scrollHeight sees it, not upwards out of reach. */
+.bk-canvas .bk-slide.is-section { justify-content: safe center; gap: 26px; }
 .bk-canvas .bk-slide.is-section h2.bk-title { font-size: 96px; line-height: 1.02; letter-spacing: -0.04em; max-width: 16ch; }
 .bk-canvas .bk-slide.is-section .bk-text { color: var(--ink-2); max-width: 40ch; }
 .bk-canvas .bk-slide.is-statement h2.bk-title { font-size: 76px; letter-spacing: -0.04em; max-width: 20ch; }
-.bk-canvas .bk-slide.is-statement { justify-content: center; }
+/* The kicker is pinned above the centred text; the top padding keeps its
+   band clear so a long statement can't slide under it. */
+.bk-canvas .bk-slide.is-statement { justify-content: safe center; padding-top: 124px; }
 .bk-canvas .bk-slide.is-statement .bk-card-top { position: absolute; top: 56px; left: 104px; right: 104px; }
 .bk-canvas .bk-slide.is-statement .bk-text { font-size: 38px; max-width: 38ch; color: var(--ink-2); }
 
