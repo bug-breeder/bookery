@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from learn import build, gates, schema, transcript
+from learn import build, gates, runner, schema, transcript
 from learn.source import ChapterSource
 
 PARA_OFFERS = ("In most ultimatum games the average offer is 40 percent of the pie, and offers "
@@ -333,8 +333,6 @@ def test_centred_present_slides_spill_where_the_overflow_check_sees():
 
 def test_a_shot_rebuilds_the_page_it_shoots(book, monkeypatch):
     # A preview from before the last edit would show a page that no longer exists.
-    from learn import runner
-
     monkeypatch.setattr(runner.config, "ROOT", book)
     monkeypatch.setattr(runner, "find_chrome", lambda: "chrome")
     shot_urls = []
@@ -447,6 +445,38 @@ def test_the_transcript_steps_through_a_widget_and_shows_its_fields():
     text = transcript.render(data, shown)
     assert "    [Founders]\n    [ ]\n  after the reader steps forward, it adds:\n    Ranked by affinity: Founders 5." in text
     assert "[next]" not in text
+
+
+LABEL_WIDGET = """
+Bookery.widget("label", function (el, props, api) {
+  var s = api.svg, art = s("svg", { viewBox: "0 0 200 80", width: 200, height: 80 });
+  var t = s("text", { x: 10, y: 20 });
+  ["A place to write", "and read stories"].forEach(function (line, j) {
+    var sp = s("tspan", { x: 10, dy: j ? "1.2em" : "0" });
+    sp.textContent = line;
+    t.appendChild(sp);
+  });
+  var tv = s("text", { x: 120, y: 20 });
+  tv.textContent = "TV";
+  art.appendChild(t);
+  art.appendChild(tv);
+  el.appendChild(art);
+});
+"""
+
+
+@pytest.mark.skipif(runner.find_chrome() is None, reason="needs Chrome")
+def test_a_drawings_labels_reach_the_transcript_line_by_line(book):
+    # innerText runs SVG text together: "A place to writeand read stories TV".
+    les = lesson()
+    slides(les)[2] = {"id": "w", "title": "A drawing", "sources": ["b0006"],
+                      "widget": {"type": "custom", "module": "label", "caption": "Read it.", "static": True}}
+    (book / "lessons" / "ch03" / "widgets").mkdir(parents=True)
+    (book / "lessons" / "ch03" / "lesson.json").write_text(json.dumps(les))
+    (book / "lessons" / "ch03" / "widgets" / "label.js").write_text(LABEL_WIDGET)
+    built = build.build(3, book)
+    shown = runner.gate_runtime(built.preview).detail["shown"]
+    assert shown["w"] == "A place to write\nand read stories\nTV"
 
 
 def test_a_record_the_reader_has_not_seen_whole_goes_whole():
