@@ -379,7 +379,7 @@ def gate_quotes(lesson: dict, src: ChapterSource) -> Gate:
 
 def gate_coverage(lesson: dict, src: ChapterSource) -> Gate:
     if not src.sections:
-        return Gate("coverage", PASS, {"note": "chapter has no sections; nothing to cover", "sections": 0})
+        return Gate("coverage", PASS, {"note": "chapter has no sections; nothing to cover", "sections": []})
     touched: dict[str, list[str]] = {}
     exhibits_used: set[str] = set()
     exhibit_blocks = {ex.block_id: ex.ref for ex in src.exhibits}
