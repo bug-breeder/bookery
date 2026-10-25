@@ -218,6 +218,9 @@ def render_page(data: dict, lesson: dict, widgets_dir: Path) -> str:
     js = (RUNTIME / "app.js").read_text()
     widgets = _custom_widgets(lesson, widgets_dir)
     head = [
+        # The Artifact skeleton supplies these two; a downloaded copy has only the page.
+        '<meta charset="utf-8">',
+        '<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">',
         f"<title>{_esc(title)}</title>",
         '<meta name="claude:viewport-fit-sides" content="cover">',
         '<link rel="preconnect" href="https://fonts.googleapis.com">',

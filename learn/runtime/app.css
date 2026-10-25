@@ -129,6 +129,10 @@
 }
 
 * { box-sizing: border-box; }
+/* The Artifact skeleton hides [hidden]; a downloaded copy runs without it,
+   and any class that sets display (the speaker notes, an answer's reason)
+   would otherwise show through. */
+[hidden]:not([hidden="until-found" i]) { display: none !important; }
 html { -webkit-text-size-adjust: 100%; }
 body {
   background: var(--paper);
