@@ -63,7 +63,9 @@
   var glossary = {};   // term -> plain definition, for the hover on [[term]]
   var terms = {};      // term -> its glossary entry, for the slide that teaches it
 
+  var sawMath = false; // md() met real math, not just "$300"; the self-test reports it
   function tex(src, display) {
+    sawMath = true;
     if (window.katex) {
       try {
         var out = window.katex.renderToString(src, { displayMode: display, throwOnError: true, output: "mathml", strict: "ignore" });
@@ -1307,8 +1309,7 @@
       }
       closePresent();
       result.dead = answerAll();
-      var hasMath = /\\\(|\\\[|\$/.test(JSON.stringify(L));
-      result.math = hasMath ? (window.katex ? "rendered" : "katex unavailable") : "none";
+      result.math = sawMath ? (window.katex ? "rendered" : "katex unavailable") : "none";
       result.errors = errors;
       result.ok = !errors.length && !result.overflow.length && !result.images.broken.length && !result.hscroll && !result.dead.length;
       document.documentElement.setAttribute("data-selftest", JSON.stringify(result));
