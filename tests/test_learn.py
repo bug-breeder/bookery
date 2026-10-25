@@ -479,6 +479,18 @@ def test_a_drawings_labels_reach_the_transcript_line_by_line(book):
     assert shown["w"] == "A place to write\nand read stories\nTV"
 
 
+@pytest.mark.parametrize("words", [40, 400])
+def test_the_gallery_description_keeps_the_book_title_whole(book, words):
+    # A 300-character cut once ended a card at "...chapter 7 of Obviously Awesome:".
+    subtitle = " ".join(["positioning"] * words)
+    (book / "lessons" / "ch03").mkdir(parents=True)
+    (book / "lessons" / "ch03" / "lesson.json").write_text(json.dumps(lesson(subtitle=subtitle)))
+    description = json.loads(build.build(3, book).publish.read_text())["description"]
+    assert description.endswith(" (an interactive lesson on chapter 3 of A Synthetic Book).")
+    assert len(description) <= build.DESCRIPTION_MAX
+    assert description.startswith(subtitle if words == 40 else "positioning positioning")
+
+
 def test_a_record_the_reader_has_not_seen_whole_goes_whole():
     props = {"offers": [{"give": 4, "rejected": 37}, {"give": 5, "rejected": 3}]}
     data = _widget_data({"type": "custom", "module": "responder", "caption": "Decide.", "props": props})

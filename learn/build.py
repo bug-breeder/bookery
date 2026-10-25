@@ -48,6 +48,8 @@ KATEX = "https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"
 # them sharp on a 2x screen at study width without bloating the page.
 MAX_IMAGE_WIDTH = 1400
 WEBP_QUALITY = 82
+# The artifact gallery card's subtitle holds at most this many characters.
+DESCRIPTION_MAX = 1000
 
 # The same delimiters the runtime's md() renders as math.
 RE_MATH = re.compile(
@@ -282,12 +284,17 @@ def build(number: int, root: Path | None = None) -> Built:
 
     title = lesson.get("title") or src.title
     about = _plain(lesson.get("subtitle") or src.title).rstrip(".")
-    description = f"{about} (an interactive lesson on chapter {number} of {src.book['title']})."
+    # Trim the lesson's own line at a word if it must, never the book's
+    # title: a card cut off at "...chapter 7 of Obviously Awesome:" reads broken.
+    tail = f" (an interactive lesson on chapter {number} of {src.book['title']})."
+    room = DESCRIPTION_MAX - len(tail)
+    if len(about) > room:
+        about = about[:room - 1].rsplit(" ", 1)[0] + "…"
     publish = out / "publish.json"
     publish.write_text(json.dumps({
         "file_path": str(index),
         "title": title,
-        "description": description[:300],
+        "description": about + tail,
         "icon": "book",
         "bytes": index.stat().st_size,
     }, indent=2) + "\n")
