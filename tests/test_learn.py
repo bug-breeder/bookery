@@ -306,6 +306,17 @@ def test_payload_embeds_figures_sources_and_resolves_quote_blocks(src):
     assert [s["status"] for s in data["sections"]] == ["taught", "taught"]
 
 
+def test_the_page_stands_alone_without_the_artifact_skeleton(src, tmp_path):
+    # Opened as a downloaded file, nothing declares the encoding or hides
+    # [hidden] elements unless the page does it itself.
+    data, _ = build.payload(lesson(), src)
+    page = build.render_page(data, lesson(), tmp_path)
+    head = page.split("<script", 1)[0]
+    assert head.startswith('<meta charset="utf-8">')
+    assert 'name="viewport"' in head
+    assert "[hidden]" in head
+
+
 def test_payload_embeds_transcribed_images_as_keys(src):
     les = _sheet(["fig 3.1"])
     slides(les)[0].pop("figure")
